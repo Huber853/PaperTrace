@@ -1,0 +1,56 @@
+# ===== Python =====
+# 虚拟环境（绝对不能提交到 git，每个人本地自己装）
+venv/
+env/
+.venv/
+ENV/
+
+# Python 编译产物
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 打包/分发
+build/
+dist/
+*.egg-info/
+*.egg
+
+# 测试/覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ===== 环境变量（机密！）=====
+# 这里会放 DEEPSEEK_API_KEY 等密钥，绝对不能上传
+.env
+.env.local
+*.env
+
+# ===== Node / Next.js =====
+node_modules/
+.next/
+out/
+.vercel/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== 数据库文件 =====
+*.db
+*.sqlite
+*.sqlite3
+
+# ===== 编辑器/IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
