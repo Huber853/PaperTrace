@@ -61,6 +61,7 @@ from database import (
 )
 from extractor import extract_claims
 from contradiction import build_matrix
+from generator import generate_review
 
 
 # ===== 创建 FastAPI 应用 =====
@@ -153,6 +154,13 @@ class ResultResponse(BaseModel):
     claims: list[ClaimOut]
     matrix: list[list[RelationOut]]   # claims 顺序对齐
     stats: dict
+
+
+class ReviewResponse(BaseModel):
+    """GET /api/review/{task_id} 的响应。"""
+    task_id: str
+    review: str
+    cached: bool  # True 表示这次是从缓存取的
 
 
 # ===== 任务存储（进程内内存）=====
@@ -441,6 +449,48 @@ async def get_task_result(task_id: str):
             detail=f"任务未完成，当前状态：{task['status']}",
         )
     return task["result"]
+
+
+# ===== 接口 4：GET /api/review/{task_id} =====
+@app.get("/api/review/{task_id}", response_model=ReviewResponse)
+async def get_review(task_id: str):
+    """
+    基于已完成任务的结果，生成一段 200-400 字的学术综述。
+    首次调用会真的跑一次 DeepSeek；之后的调用直接返回缓存。
+    """
+    task = TASKS.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task["status"] != "done":
+        raise HTTPException(
+            status_code=409,
+            detail=f"任务未完成，当前状态：{task['status']}",
+        )
+
+    # 缓存命中：直接返回
+    if task.get("review"):
+        return ReviewResponse(task_id=task_id, review=task["review"], cached=True)
+
+    # 首次生成：调 generator
+    result = task["result"]
+    try:
+        review_text = await generate_review(
+            claims=result["claims"],
+            matrix=result["matrix"],
+            query=result["query"],
+            papers=result["papers"],
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"生成综述失败: {type(e).__name__}: {e}",
+        )
+
+    # 存缓存（下次就不用再调 API 了）
+    task["review"] = review_text
+    task["updated_at"] = _now_iso()
+
+    return ReviewResponse(task_id=task_id, review=review_text, cached=False)
 
 
 # ===== 健康检查 / 根路径 =====

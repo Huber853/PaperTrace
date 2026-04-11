@@ -26,6 +26,7 @@ import {
   AnalysisResult,
   TaskStatusResponse,
   getResult,
+  getReview,
   getTaskStatus,
 } from "@/lib/api";
 
@@ -51,6 +52,16 @@ export default function ResultPage({ params }: PageProps) {
 
   // 用 ref 存 interval id，避免触发额外渲染
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ===== 综述相关状态（切片 9）=====
+  // reviewText: 完整综述文本；reviewDisplayed: 打字机当前显示到的字数对应的子串
+  // reviewLoading: 正在调 /api/review；reviewError: 请求失败原因
+  const [reviewText, setReviewText] = useState<string | null>(null);
+  const [reviewDisplayed, setReviewDisplayed] = useState("");
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  // 打字机定时器 id
+  const typewriterRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 给矩阵组件用的 paper_id → title 映射。
   // 必须在所有早 return 之前声明，遵守 React 的 rules-of-hooks
@@ -113,6 +124,50 @@ export default function ResultPage({ params }: PageProps) {
       }
     };
   }, [taskId]);
+
+  // ===== 打字机效果（切片 9）=====
+  // 每当 reviewText 变化（生成成功），就启动一个 setInterval
+  // 一次多吐一个字，直到整段出完就 clearInterval。
+  // 用 useEffect 的清理函数确保组件卸载时不会泄漏定时器。
+  useEffect(() => {
+    if (!reviewText) return;
+    setReviewDisplayed(""); // 先清空，避免叠加上一次的残留
+    let i = 0;
+    typewriterRef.current = setInterval(() => {
+      i += 1;
+      setReviewDisplayed(reviewText.slice(0, i));
+      if (i >= reviewText.length) {
+        if (typewriterRef.current) {
+          clearInterval(typewriterRef.current);
+          typewriterRef.current = null;
+        }
+      }
+    }, 35); // 约每秒 28 字，节奏自然
+
+    return () => {
+      if (typewriterRef.current) {
+        clearInterval(typewriterRef.current);
+        typewriterRef.current = null;
+      }
+    };
+  }, [reviewText]);
+
+  // 点击"生成综述"按钮：调后端 /api/review
+  const handleGenerateReview = async () => {
+    setReviewLoading(true);
+    setReviewError(null);
+    setReviewText(null);
+    setReviewDisplayed("");
+    try {
+      const data = await getReview(taskId);
+      setReviewText(data.review);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "未知错误";
+      setReviewError(message);
+    } finally {
+      setReviewLoading(false);
+    }
+  };
 
   // ===== 渲染分支：错误 =====
   if (error) {
@@ -265,6 +320,66 @@ export default function ResultPage({ params }: PageProps) {
             matrix={result.matrix}
             paperTitleById={paperTitleById}
           />
+        </section>
+
+        {/* ================ 自动综述（切片 9 亮点）================ */}
+        <section className="mb-10">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-xl font-semibold text-slate-200">
+              自动综述
+            </h2>
+            <button
+              type="button"
+              onClick={handleGenerateReview}
+              disabled={reviewLoading}
+              className="rounded-lg bg-gradient-to-r from-indigo-500 to-purple-500 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition hover:from-indigo-400 hover:to-purple-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {reviewLoading
+                ? "生成中 ..."
+                : reviewText
+                ? "重新生成"
+                : "一键生成综述"}
+            </button>
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-white/5 p-6 backdrop-blur-md">
+            {reviewError && (
+              <div className="mb-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200">
+                生成失败：{reviewError}
+              </div>
+            )}
+
+            {!reviewText && !reviewLoading && !reviewError && (
+              <p className="text-sm text-slate-400">
+                点击右上角按钮，让 AI 根据上面已抽取的主张和矛盾矩阵，自动生成一段
+                200-400 字的中文综述段落。引用编号与上方论文列表一一对应。
+              </p>
+            )}
+
+            {reviewLoading && !reviewText && (
+              <div className="flex items-center gap-3 text-sm text-slate-300">
+                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-indigo-400/30 border-t-indigo-400" />
+                正在让 DeepSeek 编织段落，预计 10-20 秒 ...
+              </div>
+            )}
+
+            {reviewText && (
+              <div className="prose prose-invert max-w-none">
+                {/* 打字机效果：reviewDisplayed 随 setInterval 逐字增长 */}
+                <p className="whitespace-pre-wrap text-base leading-relaxed text-slate-100">
+                  {reviewDisplayed}
+                  {reviewDisplayed.length < reviewText.length && (
+                    <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-indigo-300 align-middle" />
+                  )}
+                </p>
+                {reviewDisplayed.length >= reviewText.length && (
+                  <div className="mt-3 text-xs text-slate-500">
+                    字数（含标点）：{reviewText.length}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </section>
       </div>
     </main>

@@ -82,6 +82,13 @@ export interface TaskStatusResponse {
   updated_at: string;
 }
 
+/** GET /api/review/{id} 的响应 */
+export interface ReviewResponse {
+  task_id: string;
+  review: string;
+  cached: boolean;
+}
+
 // ============== 统一 axios 实例 ==============
 
 // NEXT_PUBLIC_ 前缀的环境变量会被打包到浏览器侧（注意：会暴露给用户，不要放密钥）
@@ -136,5 +143,19 @@ export async function getTaskStatus(
 /** 获取已完成任务的完整结果 */
 export async function getResult(taskId: string): Promise<AnalysisResult> {
   const { data } = await http.get<AnalysisResult>(`/api/result/${taskId}`);
+  return data;
+}
+
+/**
+ * 生成/获取综述段落
+ * ------
+ * 后端会缓存结果：第一次调用触发 LLM 生成，之后返回 cached=true。
+ * 因为走 LLM，耗时可能到 10-20 秒，所以下面额外给这个请求 90 秒超时。
+ */
+export async function getReview(taskId: string): Promise<ReviewResponse> {
+  const { data } = await http.get<ReviewResponse>(
+    `/api/review/${taskId}`,
+    { timeout: 90_000 }
+  );
   return data;
 }
