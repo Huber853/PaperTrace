@@ -42,6 +42,7 @@ FastAPI 的 BackgroundTasks 是最简单的实现方式：
 from __future__ import annotations
 
 import asyncio                                # 异步并发
+import os                                     # 读环境变量（部署时配 CORS / PORT）
 import traceback                              # 后台任务出错时打全栈
 import uuid                                   # 生成 task_id
 from datetime import datetime, timezone
@@ -73,14 +74,29 @@ app = FastAPI(
 
 
 # ===== CORS 配置 =====
-# 前端在 localhost:3000 跑，后端在 localhost:8000 跑，跨域必须放行
-# 部署时把 NEXT_PUBLIC 的真实域名加进 origins 即可
+# 前端在 localhost:3000 跑，后端在 localhost:8000 跑，跨域必须放行。
+#
+# 部署时怎么改？
+#   - Render 的环境变量里加一个 FRONTEND_ORIGIN=https://papertrace-xxx.vercel.app
+#   - 多个域名用英文逗号分隔，比如：
+#       FRONTEND_ORIGIN=https://papertrace.vercel.app,https://staging-papertrace.vercel.app
+#   - 不配的话只允许本地三个开发地址
+#
+# 安全提示：千万不要图省事写 allow_origins=["*"]，那样别人的网页也能打你的接口
+_default_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+_extra_origins = [
+    o.strip()
+    for o in os.getenv("FRONTEND_ORIGIN", "").split(",")
+    if o.strip()  # 跳过空字符串
+]
+ALLOWED_ORIGINS = _default_origins + _extra_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],   # GET / POST / OPTIONS 全放行
     allow_headers=["*"],

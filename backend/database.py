@@ -65,8 +65,15 @@ from sqlalchemy.orm import (
 # ===== 数据库文件位置 =====
 # 用 Path 拼出 backend/papertrace.db 的绝对路径，避免"在哪个目录运行就在哪建库"的混乱
 BASE_DIR = Path(__file__).resolve().parent       # 当前 database.py 所在目录 = backend/
-DB_PATH = BASE_DIR / "papertrace.db"             # SQLite 单文件数据库
-DATABASE_URL = f"sqlite:///{DB_PATH}"            # SQLAlchemy 的连接 URL，sqlite 用三个斜杠
+DB_PATH = BASE_DIR / "papertrace.db"             # 本地默认：backend/papertrace.db
+#
+# DATABASE_URL 可以被环境变量覆盖，部署时很有用：
+#   - Render 上挂一块 1GB 持久盘到 /var/data，就配 DATABASE_URL=sqlite:////var/data/papertrace.db
+#     （注意 sqlite:////  是 4 个斜杠，因为绝对路径以 / 开头）
+#   - 不挂盘的话默认就用本地 backend/papertrace.db，Render 重启会丢失数据库
+#     （对 PaperTrace 这种"每次查询都现拉论文"的工具来说，丢库其实可以接受）
+import os as _os
+DATABASE_URL = _os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
 
 
 # ===== 引擎和会话工厂 =====

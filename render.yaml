@@ -1,0 +1,60 @@
+# Render Blueprint —— 一键把 PaperTrace 后端部署到 Render
+# =========================================================
+# 这是 Render 的"基础设施即代码"配置文件。
+# 你可以：
+#   1) 把这个仓库推到 GitHub
+#   2) 在 Render 控制台点 "New +" → "Blueprint"
+#   3) 选你的仓库，Render 会读取这个文件并自动建出下面声明的服务
+#
+# 不想用 Blueprint？也可以手动在 Render 上"New + Web Service"，
+# 然后照着 DEPLOY.md 里的步骤填表，效果一样。
+#
+# 文档：https://render.com/docs/blueprint-spec
+
+services:
+  - type: web                                 # 普通 Web 服务（HTTP 暴露）
+    name: papertrace-backend
+    runtime: python                           # 用 Render 的 Python 运行时
+    plan: free                                # 免费档（每月 750 小时，闲置 15 分钟会休眠）
+    region: singapore                         # 离中国大陆最近的区域，国内访问比 oregon 快
+    rootDir: backend                          # 仓库里 backend/ 子目录是项目根
+    buildCommand: pip install -r requirements.txt
+    # Render 会注入 $PORT 环境变量，必须 bind 到 0.0.0.0:$PORT，否则健康检查失败
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /                        # FastAPI 根路由会返回 {"service":"PaperTrace API","status":"ok",...}
+    autoDeploy: true                          # GitHub 推送即自动部署
+
+    envVars:
+      # ----- 必填：DeepSeek API key -----
+      # sync: false 表示这个值"不存在仓库里"，部署时 Render 会让你手动填
+      # 不要写在 yaml 里，否则推到 GitHub 就泄露了！
+      - key: DEEPSEEK_API_KEY
+        sync: false
+
+      # ----- 可选：模型和 base url 用默认就行，需要换模型时再改 -----
+      - key: DEEPSEEK_BASE_URL
+        value: https://api.deepseek.com
+      - key: DEEPSEEK_MODEL
+        value: deepseek-chat
+
+      # ----- 必填：前端 Vercel 域名（用来配 CORS）-----
+      # 部署完前端拿到 vercel 域名再回来填
+      - key: FRONTEND_ORIGIN
+        sync: false
+
+      # ----- Python 版本 -----
+      # 没指定的话 Render 默认装 3.11，PaperTrace 用 3.14 写的，最好显式指定
+      # （Render 支持的最新版本以官方文档为准；3.11+ 都能跑通）
+      - key: PYTHON_VERSION
+        value: "3.11.10"
+
+    # ----- 持久磁盘（可选）-----
+    # 免费档支持挂 1 GB 持久盘，挂上后 SQLite 就不会因重启丢数据
+    # 注意：挂盘后 DATABASE_URL 必须改成磁盘上的路径
+    # disk:
+    #   name: papertrace-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+    # 如果启用上面三行，再加一条环境变量：
+    #   - key: DATABASE_URL
+    #     value: sqlite:////var/data/papertrace.db

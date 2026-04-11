@@ -1,0 +1,37 @@
+# PaperTrace 后端依赖（pip install -r requirements.txt）
+# ==========================================================
+# 这是部署到 Render 用的依赖清单。
+# 为什么要把版本写死（==）？
+#   - 不写死的话，部署时 Render 会装最新版，可能引入 breaking change
+#   - 写死后任何机器装出来的依赖树都一样，bug 可复现
+# 这些版本是开发本地 venv 实测能跑通的版本（python 3.14）。
+
+# ---- Web 框架 ----
+fastapi==0.135.3            # FastAPI 主体
+uvicorn==0.44.0             # ASGI 服务器（生产环境用 uvicorn 直接跑）
+starlette==1.0.0            # FastAPI 底层依赖（CORS、BackgroundTasks 都来自它）
+
+# ---- 数据校验 ----
+pydantic==2.12.5            # 请求/响应模型
+pydantic_core==2.41.5       # pydantic 的 Rust 实现，跟着 pydantic 走
+
+# ---- HTTP 客户端 ----
+httpx==0.28.1               # 异步 HTTP 客户端（请 Semantic Scholar / DeepSeek）
+httpcore==1.0.9             # httpx 底层
+h11==0.16.0                 # HTTP/1.1 协议
+anyio==4.13.0               # async IO 基础库
+certifi==2026.2.25          # HTTPS 证书包
+idna==3.11                  # 国际化域名
+
+# ---- ORM ----
+SQLAlchemy==2.0.49          # ORM
+greenlet==3.4.0             # SQLAlchemy 异步桥接
+
+# ---- 配置/工具 ----
+python-dotenv==1.2.2        # 读 .env 文件
+click==8.3.2                # uvicorn 命令行依赖
+colorama==0.4.6             # Windows 终端颜色
+typing_extensions==4.15.0   # 新版 typing 语法 backport
+typing-inspection==0.4.2    # pydantic 类型自省
+annotated-types==0.7.0      # pydantic 元数据
+annotated-doc==0.0.4
