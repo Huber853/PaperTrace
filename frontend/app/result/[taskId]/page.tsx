@@ -19,7 +19,8 @@
 
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import {
   AnalysisResult,
@@ -27,6 +28,12 @@ import {
   getResult,
   getTaskStatus,
 } from "@/lib/api";
+
+// ECharts 依赖 window，禁用 SSR
+const ContradictionMatrix = dynamic(
+  () => import("@/components/ContradictionMatrix"),
+  { ssr: false }
+);
 
 interface PageProps {
   params: { taskId: string };
@@ -44,6 +51,15 @@ export default function ResultPage({ params }: PageProps) {
 
   // 用 ref 存 interval id，避免触发额外渲染
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 给矩阵组件用的 paper_id → title 映射。
+  // 必须在所有早 return 之前声明，遵守 React 的 rules-of-hooks
+  const paperTitleById = useMemo(() => {
+    if (!result) return {};
+    const map: Record<number, string> = {};
+    for (const p of result.papers) map[p.id] = p.title;
+    return map;
+  }, [result]);
 
   useEffect(() => {
     let cancelled = false;
@@ -153,7 +169,6 @@ export default function ResultPage({ params }: PageProps) {
   }
 
   // ===== 渲染分支：完成 =====
-  // 切片 8 会在这里加 ContradictionMatrix 组件，现在先用基础卡片把数据展示出来
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white">
       <div className="container mx-auto max-w-5xl px-4 py-10">
@@ -240,17 +255,16 @@ export default function ResultPage({ params }: PageProps) {
           </div>
         </section>
 
-        {/* 矩阵占位符（切片 8 会用 ECharts 替换）*/}
+        {/* 矛盾矩阵热力图 */}
         <section className="mb-10">
           <h2 className="mb-3 text-xl font-semibold text-slate-200">
             矛盾矩阵
           </h2>
-          <div className="rounded-xl border border-dashed border-white/20 bg-white/5 p-8 text-center text-slate-400 backdrop-blur-md">
-            <p className="text-sm">
-              矩阵已构建（{result.matrix.length}×{result.matrix.length}），
-              热力图可视化将在切片 8 加入 ECharts 后展示。
-            </p>
-          </div>
+          <ContradictionMatrix
+            claims={result.claims}
+            matrix={result.matrix}
+            paperTitleById={paperTitleById}
+          />
         </section>
       </div>
     </main>
