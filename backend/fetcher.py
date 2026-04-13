@@ -1,187 +1,194 @@
 """
-PaperTrace - 切片 2：论文数据获取模块
-=====================================
+PaperTrace - 论文数据获取入口（已迁移到多数据源）
+==================================================
 
-作用：从 Semantic Scholar 公开 API 拉取论文元数据。
-被谁调用：稍后切片 6 的 FastAPI 后端会调用 search_papers()，把结果写进数据库。
+历史背景：
+  - 切片 2 时这里直接调 Semantic Scholar
+  - 后来 SS 在国内访问限流非常严重，遇到 429 几乎不可用
+  - 于是抽出 backend/sources/ 子包，做成"多数据源 + 自动 fallback"
+  - 这个文件现在变成一层薄薄的"适配器 + 缓存"，把 sources 的结果包成
+    main.py 已经在用的旧 dict 格式（避免 main.py 也要改）
 
 ----------------------------------------------------
-新手必读：什么是 async / await ？
+对外接口（保持不变）
 ----------------------------------------------------
-普通函数（同步）调一个网络请求时，Python 会"傻等"几百毫秒，期间什么都不能做。
-如果要拉 20 篇论文，就要等 20 次，慢得要命。
+async def search_papers(query, limit=20) -> list[dict]
+返回的 dict 字段：
+    paperId        论文唯一 ID（OpenAlex 的 W 号 / arXiv 号 / ...）
+    title          标题
+    abstract       摘要正文
+    year           年份
+    authors        作者名字列表
+    citationCount  引用数
 
-async 函数（异步）告诉 Python：
-"我现在要等网络了，你先去干别的，等数据回来再回来叫我。"
-这样你就能在等待 A 请求时同时发出 B 请求，速度暴涨。
+新增字段（main.py 暂时没用，但保留方便未来扩展）：
+    source         数据真正来自哪个源（"openalex" / "arxiv"）
+    doi            DOI（可能为 None）
+    url            论文页面 URL（可能为 None）
 
-- async def 定义一个"协程函数"
-- await 表示"在这里等一个异步操作完成，期间让出控制权"
-- 协程必须由 asyncio.run() 或别的协程驱动，不能直接当普通函数调
-
-类比：去食堂打饭。同步=排一队等一个窗口；异步=同时点 5 个窗口的饭，谁好了先拿谁。
+----------------------------------------------------
+为什么不让 main.py 直接用 Paper Pydantic 模型？
+----------------------------------------------------
+那样改动面更大（main.py / database.py / 前端类型都要联动）。
+当前作法是"兼容层"：
+  sources 返回结构化的 Paper（内部清晰）
+  fetcher 翻译成旧 dict（外部稳定）
+  未来想升级 main.py 时，只需要让它直接 import sources 即可，
+  fetcher 这一层就可以删掉。
 """
 
 # ===== 导入区 =====
-import asyncio                # Python 内置的异步事件循环库
-import sys                    # 用于在 Windows 上修正控制台编码
-import httpx                  # 现代异步 HTTP 客户端，比 requests 更适合 async
-from pprint import pprint     # 美化打印字典/列表，方便调试观察结构
-from typing import Optional   # 类型提示，告诉别人这个变量可能是 None
+from __future__ import annotations
+
+import sys                              # Windows 控制台编码修正
+from pprint import pprint               # 调试美化打印
+
+# 缓存：fetcher 这一层做"对外的最终结果"缓存，避免每次都跑一遍 fallback
+from cache import get_cache, set_cache
+
+# 数据源子包
+from sources import Paper, search_with_fallback
 
 # Windows 控制台默认是 GBK，会让中文 print 变乱码。强制 UTF-8。
-# Python 3.7+ 支持 reconfigure；try/except 兜底防止低版本报错
 try:
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 except Exception:
     pass
 
 
-# ===== 常量区 =====
-# Semantic Scholar 的论文搜索接口（公开 API，无需 key 也能用，但有限流）
-SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+# ===== 缓存命名空间 =====
+# 注意：故意改名了。
+#   - 旧值 "ss_search" 缓存的是 Semantic Scholar 的格式
+#   - 新值 "papers_search" 缓存的是新 dict 格式（含 source / doi / url）
+# 改名能让旧的 ss_search_*.json 文件自然失效，不会被错误地反序列化
+CACHE_PREFIX = "papers_search"
 
-# 我们想从每篇论文里取出来的字段（API 用逗号分隔的字符串接收）
-# paperId 是 SS 内部唯一 ID；其余字段就是论文的常用元信息
-PAPER_FIELDS = "paperId,title,abstract,year,authors,citationCount"
 
-# 网络请求超时时间（秒）。Semantic Scholar 偶尔会慢，给宽一点
-REQUEST_TIMEOUT = 30.0
+# ===== 内部工具：Paper → 旧 dict 格式 =====
+def _paper_to_legacy_dict(paper: Paper, source_name: str) -> dict:
+    """
+    把统一的 Paper 模型翻译成 main.py 期望的旧 dict 形状。
 
-# 限流时（HTTP 429）的重试次数
-MAX_RETRIES = 3
+    旧字段名沿用 Semantic Scholar 时代的 camelCase（paperId / citationCount），
+    避免改动 main.py。新字段（source / doi / url）顺手带上，将来可能用得到。
+    """
+    return {
+        # ----- 旧字段（main.py 在用，保持稳定）-----
+        "paperId": paper.source_id,
+        "title": paper.title,
+        "abstract": paper.abstract,
+        "year": paper.year,
+        "authors": paper.authors,
+        "citationCount": paper.citation_count,
+        # ----- 新字段（保留以便扩展）-----
+        "source": source_name,
+        "doi": paper.doi,
+        "url": paper.url,
+    }
 
 
 # ===== 核心函数 =====
-async def search_papers(query: str, limit: int = 20) -> list[dict]:
+async def search_papers(
+    query: str,
+    limit: int = 20,
+    refresh: bool = False,
+) -> tuple[list[dict], str]:
     """
-    从 Semantic Scholar 异步搜索论文。
+    异步搜索论文。
+
+    流程：
+        1. 先查本地缓存（命中且未过期则直接返回）
+        2. 走 sources.search_with_fallback：
+             OpenAlex → 失败/0 篇 → arXiv
+        3. 把统一 Paper 翻译成旧 dict 格式
+        4. 写缓存
+        5. 返回
 
     参数:
-        query: 搜索关键词，例如 "remote work productivity"
-        limit: 最多返回多少篇论文，默认 20，Semantic Scholar 单次最多 100
+        query:   搜索关键词，例如 "remote work productivity"
+        limit:   最多返回多少篇
+        refresh: True 时跳过缓存强制重新请求外部 API（用于"刷新数据"按钮）
 
     返回:
-        一个列表，每个元素是一篇论文的字典，例如：
-        [
-            {
-                "paperId": "abc123...",
-                "title": "Remote Work and Productivity",
-                "abstract": "We study ...",
-                "year": 2023,
-                "authors": ["Alice Smith", "Bob Lee"],   # 注意：已经压成字符串列表
-                "citationCount": 42,
-            },
-            ...
-        ]
-        没有摘要(abstract)的论文会被过滤掉，因为后续切片 4 要靠摘要抽主张。
+        (papers, fetched_at)
+            papers      — list[dict]，字段格式见模块顶部说明
+            fetched_at  — ISO 8601 时间戳（UTC），表示这批数据"最初是什么时候
+                          从外部源获取的"。缓存命中时是当初写入缓存的时间，
+                          缓存未命中或 refresh=True 时是"现在"。
     """
 
-    # 构造 URL 查询参数。注意：limit 多取一些，方便过滤掉没摘要的之后还能凑够数
-    params = {
-        "query": query,                # 搜索关键词
-        "limit": min(limit * 2, 100),  # 多拉一倍，最多 100，对冲掉空摘要的损失
-        "fields": PAPER_FIELDS,        # 告诉 SS 我们要哪些字段
-    }
+    # ===== 第一步：缓存键 =====
+    # 注意：缓存键里**不包含**数据源名字。
+    # 想想为什么 —— 我们关心的是"对同一个 query+limit 是否给出过结果"，
+    # 至于结果是 OpenAlex 还是 arXiv 给的，对调用方来说无所谓。
+    # 这样一旦缓存命中，无论原本走的是主源还是备用源，都能省掉网络往返。
+    cache_key = {"query": query, "limit": limit, "v": 2}
+    # "v": 2 是缓存版本号；如果未来字段格式又变了，把它加 1 就能让旧缓存自然失效
 
-    # 用 httpx.AsyncClient 上下文管理器，自动管理连接池和关闭
-    # timeout 同时控制连接超时和读取超时
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    # ===== 第二步：查缓存（除非 refresh=True） =====
+    # refresh=True 是用户在前端点了"刷新数据"按钮，希望强制走一次真请求。
+    # 这种情况下我们直接跳过 get_cache，避免命中老结果。
+    if not refresh:
+        cached = get_cache(CACHE_PREFIX, cache_key)
+        if cached is not None:
+            data, cached_at = cached
+            print(
+                f"[缓存命中] query={query!r} limit={limit} "
+                f"→ 直接返回 {len(data)} 篇（cached_at={cached_at}）"
+            )
+            return data, cached_at
+    else:
+        print(f"[强制刷新] query={query!r} limit={limit} → 跳过缓存")
 
-        # 重试循环：处理 429（限流）和瞬时网络错误
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                # await 在这里释放事件循环，等 HTTP 响应回来
-                response = await client.get(SEMANTIC_SCHOLAR_URL, params=params)
+    # ===== 第三步：走多源 fallback =====
+    # search_with_fallback 内部会按 [openalex, arxiv] 的顺序尝试，
+    # 任何一个源抛异常或返回 0 篇都会切下一个。
+    # 我们这一层不需要写任何 try/except —— 让所有源都失败的极端情况自然抛出来，
+    # 由 main.py 的后台任务捕获并把任务标 failed。
+    papers: list[Paper] = await search_with_fallback(query, limit=limit)
 
-                # 命中限流：等一会儿再试。SS 的限流策略大约是每秒 1 次（无 key）
-                if response.status_code == 429:
-                    wait = 2 ** attempt  # 指数退避：2、4、8 秒
-                    print(f"[警告] 遇到限流(429)，第 {attempt}/{MAX_RETRIES} 次重试，等待 {wait}s ...")
-                    await asyncio.sleep(wait)
-                    continue  # 跳到下一次循环重试
+    # ===== 第四步：翻译成旧 dict 格式 =====
+    # 用 paper.url 反推数据源名字略奇怪，更直接的做法是让 search_with_fallback
+    # 也告诉我们用了哪个源。但当前需求只用得到名字标识一下，简单做法：
+    # 所有 Paper 都没显式带 source 字段，那我们用一个启发式 —— 看 URL 里有没有 arxiv.org
+    cleaned: list[dict] = []
+    for p in papers:
+        source_name = "arxiv" if (p.url and "arxiv.org" in p.url) else "openalex"
+        cleaned.append(_paper_to_legacy_dict(p, source_name))
 
-                # 其它非 2xx 错误：直接抛出，由外层捕获
-                response.raise_for_status()
+    # ===== 第五步：写缓存 =====
+    # 即使 cleaned 是空列表也写入 —— 否则同一个空查询会被反复打两次外部 API。
+    # set_cache 现在会返回写入时的 cached_at，正好作为本次的 fetched_at 返回给上层。
+    fetched_at = set_cache(CACHE_PREFIX, cache_key, cleaned)
 
-                # 解析 JSON。SS 的返回格式是 {"total": N, "data": [...]}
-                payload = response.json()
-                raw_papers = payload.get("data", [])
-                break  # 拿到数据就跳出重试循环
-
-            except httpx.TimeoutException:
-                # 网络超时：通常是 SS 服务器慢或本地网络抖动
-                print(f"[警告] 请求超时，第 {attempt}/{MAX_RETRIES} 次重试 ...")
-                if attempt == MAX_RETRIES:
-                    # 最后一次还失败，直接抛出
-                    raise
-                await asyncio.sleep(2)
-
-            except httpx.HTTPStatusError as e:
-                # 4xx/5xx 错误。401/403 一般不会出现（这个 API 不强制 key）
-                # 5xx 是 SS 自己的问题，也重试一下
-                if 500 <= e.response.status_code < 600 and attempt < MAX_RETRIES:
-                    print(f"[警告] 服务器错误 {e.response.status_code}，重试中 ...")
-                    await asyncio.sleep(2)
-                    continue
-                raise  # 其它情况直接抛出
-
-        else:
-            # 重试循环正常跑完都没 break = 全部失败
-            raise RuntimeError(f"调用 Semantic Scholar 失败，已重试 {MAX_RETRIES} 次")
-
-    # ===== 数据清洗 =====
-    cleaned: list[dict] = []  # 存放过滤+整理后的论文
-    for paper in raw_papers:
-        # 关键过滤：没有摘要的论文直接跳过（后续抽主张要靠摘要）
-        abstract: Optional[str] = paper.get("abstract")
-        if not abstract:
-            continue
-
-        # authors 字段在 SS 返回里是 [{"authorId": "...", "name": "..."}, ...]
-        # 我们只要名字，压成纯字符串列表，更简洁也方便存数据库
-        authors_raw = paper.get("authors") or []
-        author_names = [a.get("name", "") for a in authors_raw if a.get("name")]
-
-        # 组装我们自己的标准格式
-        cleaned.append({
-            "paperId": paper.get("paperId"),
-            "title": paper.get("title") or "",                  # 保险：避免 None
-            "abstract": abstract,
-            "year": paper.get("year"),                          # 可能是 None
-            "authors": author_names,
-            "citationCount": paper.get("citationCount") or 0,   # 没引用就是 0
-        })
-
-        # 凑够 limit 篇就停，多余的丢弃
-        if len(cleaned) >= limit:
-            break
-
-    return cleaned
+    return cleaned, fetched_at
 
 
 # ===== 文件直接运行时的测试入口 =====
-# 这是 Python 的标准模式：当文件作为脚本直接跑时，__name__ == "__main__"
-# 当作为模块被 import 时，下面的代码不会执行
 if __name__ == "__main__":
+    import asyncio
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     async def _demo():
         """演示用例：搜 'remote work productivity' 并美化打印结果。"""
         query = "remote work productivity"
         print(f"\n>>> 正在搜索：{query} ...\n")
 
-        # await 调用我们写的异步函数
-        papers = await search_papers(query, limit=5)
+        papers, fetched_at = await search_papers(query, limit=5)
 
-        print(f">>> 拿到 {len(papers)} 篇有摘要的论文：\n")
+        print(f"\n>>> 拿到 {len(papers)} 篇有摘要的论文（fetched_at={fetched_at}）：\n")
         for i, p in enumerate(papers, start=1):
-            # 标题 + 年份 + 引用数 + 作者一行展示
-            authors_str = ", ".join(p["authors"][:3])  # 只显示前 3 个作者
+            authors_str = ", ".join(p["authors"][:3])
             if len(p["authors"]) > 3:
                 authors_str += " et al."
             print(f"[{i}] {p['title']}")
-            print(f"    年份: {p['year']}  |  引用: {p['citationCount']}  |  作者: {authors_str}")
-            # 摘要太长，截断显示
+            print(
+                f"    来源: {p['source']}  |  ID: {p['paperId']}  |  "
+                f"年份: {p['year']}  |  引用: {p['citationCount']}"
+            )
+            print(f"    作者: {authors_str}")
             snippet = p["abstract"][:200].replace("\n", " ")
             print(f"    摘要: {snippet}...\n")
 
@@ -189,28 +196,34 @@ if __name__ == "__main__":
         if papers:
             pprint(papers[0])
 
-    # asyncio.run() 是启动协程的入口，它会创建事件循环、跑完、关闭
     asyncio.run(_demo())
 
 
 # ===========================================================
-# 如何运行这个文件
+# 如何运行
 # ===========================================================
-# 1. 先激活虚拟环境（每次新开终端都要做）：
-#       Windows Git Bash:    source venv/Scripts/activate
-#       Windows PowerShell:  venv\Scripts\Activate.ps1
-#       macOS / Linux:       source venv/bin/activate
+# 1. 激活虚拟环境：
+#       source venv/Scripts/activate
 #
 # 2. 在 backend 目录下运行：
-#       python fetcher.py
+#       PYTHONIOENCODING=utf-8 python fetcher.py
 #
-# 3. 你应该看到 5 篇论文的标题、年份、作者、摘要片段，最后一篇的完整字段。
+# 3. 你应该看到 5 篇论文（多半来自 OpenAlex）。
+#
+# 测试 fallback（OpenAlex 故障 → 切到 arXiv）：
+#   见 sources/__init__.py 的自检 [3/3]，或这样写一个一次性脚本：
+#
+#       from sources import OpenAlexSource, ArxivSource, search_with_fallback
+#       broken = OpenAlexSource(base_url="https://invalid.example.com/works")
+#       backup = ArxivSource()
+#       papers = await search_with_fallback("remote work", 5, sources=[broken, backup])
+#       # 应该能拿到 arXiv 的结果
 #
 # 常见报错：
-#   - ModuleNotFoundError: No module named 'httpx'
-#       → venv 没激活，或者忘装依赖。重新 pip install httpx
+#   - ModuleNotFoundError: No module named 'feedparser'
+#       → pip install feedparser
 #   - httpx.ConnectError
-#       → 网络问题，可能要开代理才能访问 Semantic Scholar
-#   - 一直卡在 429
-#       → 你跑得太频繁了。等一分钟再试，或者去 SS 官网申请免费 API key
+#       → 网络问题。OpenAlex 国内一般通；arXiv 偶尔需要代理
+#   - 两个源都返回 0 篇
+#       → query 太冷门或有奇怪字符；换个关键词试试
 # ===========================================================

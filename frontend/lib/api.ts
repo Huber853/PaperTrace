@@ -38,6 +38,9 @@ export interface Paper {
   year: number | null;
   authors: string[];
   citation_count: number;
+  doi: string | null;
+  url: string | null;
+  source: string | null;
 }
 
 /** 一条主张 */
@@ -48,6 +51,15 @@ export interface Claim {
   intervention: string;
   conclusion: string;
   direction: "positive" | "negative" | "neutral";
+}
+
+/** 时间轴上的一个年份聚合点 */
+export interface TimelinePoint {
+  year: number;
+  positive: number;
+  negative: number;
+  neutral: number;
+  total: number;
 }
 
 /** 完整分析结果 */
@@ -63,6 +75,10 @@ export interface AnalysisResult {
     contradict_pairs: number;
     support_pairs: number;
   };
+  /** 按年份聚合的观点演化数据 */
+  timeline: TimelinePoint[];
+  /** ISO 8601 时间戳：这批论文最初是何时从 OpenAlex/arXiv 拉到的 */
+  data_fetched_at: string;
 }
 
 /** POST /api/analyze 的响应 */
@@ -120,14 +136,19 @@ http.interceptors.response.use(
 
 // ============== API 调用函数 ==============
 
-/** 提交一次分析任务 */
+/**
+ * 提交一次分析任务。
+ * refresh=true 时后端会跳过缓存,强制重新拉外部数据。
+ */
 export async function startAnalysis(
   query: string,
-  limit = 20
+  limit = 20,
+  refresh = false
 ): Promise<AnalyzeResponse> {
   const { data } = await http.post<AnalyzeResponse>("/api/analyze", {
     query,
     limit,
+    refresh,
   });
   return data;
 }

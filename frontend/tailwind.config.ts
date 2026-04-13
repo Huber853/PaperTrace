@@ -12,6 +12,15 @@ const config: Config = {
         background: "var(--background)",
         foreground: "var(--foreground)",
       },
+      animation: {
+        breathe: "breathe 2s ease-in-out infinite",
+      },
+      keyframes: {
+        breathe: {
+          "0%, 100%": { boxShadow: "0 0 0 0 rgba(139,92,246,0.5)" },
+          "50%": { boxShadow: "0 0 0 14px rgba(139,92,246,0)" },
+        },
+      },
     },
   },
   plugins: [],

@@ -28,11 +28,20 @@ import {
   getResult,
   getReview,
   getTaskStatus,
+  startAnalysis,
 } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import LoadingSteps from "@/components/LoadingSteps";
+import DivergenceCard from "@/components/DivergenceCard";
+import { ExternalLink } from "lucide-react";
 
 // ECharts 依赖 window，禁用 SSR
 const ContradictionMatrix = dynamic(
   () => import("@/components/ContradictionMatrix"),
+  { ssr: false }
+);
+const TimelineEvolution = dynamic(
+  () => import("@/components/TimelineEvolution"),
   { ssr: false }
 );
 
@@ -42,6 +51,7 @@ interface PageProps {
 
 export default function ResultPage({ params }: PageProps) {
   const taskId = params.taskId;
+  const router = useRouter();
 
   // 任务状态（轮询返回的）
   const [taskStatus, setTaskStatus] = useState<TaskStatusResponse | null>(null);
@@ -49,6 +59,8 @@ export default function ResultPage({ params }: PageProps) {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   // 出错信息
   const [error, setError] = useState<string | null>(null);
+  // "刷新数据"按钮的 loading 状态
+  const [refreshing, setRefreshing] = useState(false);
 
   // 用 ref 存 interval id，避免触发额外渲染
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -152,6 +164,26 @@ export default function ResultPage({ params }: PageProps) {
     };
   }, [reviewText]);
 
+  /**
+   * "刷新数据"按钮：带 refresh=true 重新提交分析 → 跳到新任务页面。
+   * 为什么跳新 taskId 而不是在当前页面重新加载？
+   *   因为后端任务是"新建"的——它有自己的 taskId 和全新的状态。
+   *   如果留在原页面改 taskId，轮询清理逻辑会变得很复杂；
+   *   不如直接跳转，简单又不会有残留状态。
+   */
+  const handleRefresh = async () => {
+    if (!result) return;
+    setRefreshing(true);
+    try {
+      const res = await startAnalysis(result.query, result.papers.length, true);
+      router.push(`/result/${res.task_id}`);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "刷新失败";
+      setError(message);
+      setRefreshing(false);
+    }
+  };
+
   // 点击"生成综述"按钮：调后端 /api/review
   const handleGenerateReview = async () => {
     setReviewLoading(true);
@@ -190,27 +222,15 @@ export default function ResultPage({ params }: PageProps) {
   }
 
   // ===== 渲染分支：进行中 =====
+  // 用 LoadingSteps 组件替代以前的转圈 spinner，给用户讲一个 4 步的"故事"
   if (!result) {
     return (
       <main className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white">
         <div className="container mx-auto flex min-h-screen max-w-2xl flex-col items-center justify-center px-4 text-center">
-          {/* 转圈 loading */}
-          <div className="mb-8 h-16 w-16 animate-spin rounded-full border-4 border-indigo-400/30 border-t-indigo-400" />
+          <AnimatedTitle />
 
-          <h2 className="mb-2 text-2xl font-semibold">正在分析中</h2>
-          <p className="mb-6 text-sm text-slate-400">
-            任务 ID：<code className="rounded bg-white/10 px-2 py-0.5 text-xs">{taskId}</code>
-          </p>
-
-          {/* 进度文本 */}
-          <div className="w-full max-w-md rounded-xl border border-white/10 bg-white/5 p-4 backdrop-blur-md">
-            <div className="mb-1 text-xs uppercase tracking-wider text-indigo-300">
-              当前阶段
-            </div>
-            <div className="text-base text-slate-200">
-              {taskStatus?.progress || "排队中 ..."}
-            </div>
-          </div>
+          {/* 4 步进度叙事 —— 跟着后端 progress 字段自动推进 */}
+          <LoadingSteps progress={taskStatus?.progress} />
 
           {/* 状态徽章 */}
           {taskStatus && (
@@ -227,7 +247,7 @@ export default function ResultPage({ params }: PageProps) {
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white">
       <div className="container mx-auto max-w-5xl px-4 py-10">
-        {/* 顶部：query + 返回 */}
+        {/* 顶部：query + 返回 + 获取时间 + 刷新按钮 */}
         <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
           <div>
             <Link
@@ -240,7 +260,36 @@ export default function ResultPage({ params }: PageProps) {
             <p className="mt-1 text-slate-400">
               query：<span className="text-slate-200">{result.query}</span>
             </p>
+            {/* 数据获取时间：把 ISO 时间戳转为用户本地时间展示 */}
+            {result.data_fetched_at && (
+              <p className="mt-1 text-xs text-slate-500">
+                数据获取于{" "}
+                {new Date(result.data_fetched_at).toLocaleString("zh-CN", {
+                  year: "numeric",
+                  month: "2-digit",
+                  day: "2-digit",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </p>
+            )}
           </div>
+          {/* 刷新数据按钮 */}
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="shrink-0 rounded-lg border border-purple-400/40 bg-purple-500/10 px-4 py-2 text-sm font-medium text-purple-200 transition-all duration-200 hover:-translate-y-0.5 hover:border-purple-300/60 hover:bg-purple-500/20 hover:shadow-lg hover:shadow-purple-500/20 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+          >
+            {refreshing ? (
+              <span className="flex items-center gap-2">
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-purple-300/40 border-t-purple-300" />
+                刷新中 ...
+              </span>
+            ) : (
+              "🔄 刷新数据"
+            )}
+          </button>
         </div>
 
         {/* 统计卡片 */}
@@ -258,9 +307,18 @@ export default function ResultPage({ params }: PageProps) {
             {result.papers.map((p) => (
               <div
                 key={p.id}
-                className="rounded-xl border border-white/10 bg-white/5 p-4 backdrop-blur-md"
+                className="rounded-xl border border-white/10 bg-white/5 p-4 backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:border-purple-400/50 hover:shadow-xl hover:shadow-purple-500/20"
               >
-                <div className="text-sm font-medium text-white">{p.title}</div>
+                {/* 标题 + 外链图标 */}
+                <div className="flex items-start gap-1.5">
+                  <span className="text-sm font-medium text-white">{p.title}</span>
+                  <PaperLink paper={p} />
+                </div>
+                {/* 来源 + DOI */}
+                <div className="mt-1 text-xs text-slate-500">
+                  {p.source && <>📄 {p.source === "openalex" ? "OpenAlex" : "arXiv"}</>}
+                  {p.doi && <> · DOI: {p.doi}</>}
+                </div>
                 <div className="mt-1 text-xs text-slate-400">
                   {p.year || "—"} · {p.authors.slice(0, 3).join(", ")}
                   {p.authors.length > 3 ? " et al." : ""} · 引用 {p.citation_count}
@@ -289,7 +347,7 @@ export default function ResultPage({ params }: PageProps) {
               return (
                 <div
                   key={c.id}
-                  className="rounded-lg border border-white/10 bg-white/5 p-3 backdrop-blur-md"
+                  className="rounded-lg border border-white/10 bg-white/5 p-3 backdrop-blur-xl transition-all duration-200 hover:border-purple-400/50 hover:shadow-lg hover:shadow-purple-500/10"
                 >
                   <div className="flex items-start gap-2">
                     <span
@@ -310,6 +368,9 @@ export default function ResultPage({ params }: PageProps) {
           </div>
         </section>
 
+        {/* 分歧指数大卡片 —— 一句话总结整次分析的"撕裂程度" */}
+        <DivergenceCard stats={result.stats} />
+
         {/* 矛盾矩阵热力图 */}
         <section className="mb-10">
           <h2 className="mb-3 text-xl font-semibold text-slate-200">
@@ -319,8 +380,19 @@ export default function ResultPage({ params }: PageProps) {
             claims={result.claims}
             matrix={result.matrix}
             paperTitleById={paperTitleById}
+            papers={result.papers}
           />
         </section>
+
+        {/* 观点演化时间轴 */}
+        {result.timeline && result.timeline.length > 0 && (
+          <section className="mb-10">
+            <h2 className="mb-3 text-xl font-semibold text-slate-200">
+              观点演化时间轴
+            </h2>
+            <TimelineEvolution timeline={result.timeline} />
+          </section>
+        )}
 
         {/* ================ 自动综述（切片 9 亮点）================ */}
         <section className="mb-10">
@@ -332,7 +404,7 @@ export default function ResultPage({ params }: PageProps) {
               type="button"
               onClick={handleGenerateReview}
               disabled={reviewLoading}
-              className="rounded-lg bg-gradient-to-r from-indigo-500 to-purple-500 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition hover:from-indigo-400 hover:to-purple-400 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-lg bg-gradient-to-r from-indigo-500 to-purple-500 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition-all duration-200 hover:-translate-y-0.5 hover:from-indigo-400 hover:to-purple-400 hover:shadow-xl hover:shadow-indigo-500/30 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
             >
               {reviewLoading
                 ? "生成中 ..."
@@ -342,7 +414,7 @@ export default function ResultPage({ params }: PageProps) {
             </button>
           </div>
 
-          <div className="rounded-xl border border-white/10 bg-white/5 p-6 backdrop-blur-md">
+          <div className="rounded-xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl transition-all hover:border-purple-400/30">
             {reviewError && (
               <div className="mb-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200">
                 生成失败：{reviewError}
@@ -388,6 +460,45 @@ export default function ResultPage({ params }: PageProps) {
 
 // ============== 子组件 ==============
 
+/** 论文外链图标：按 doi > url > openalex_id 优先级选链接 */
+function PaperLink({ paper }: { paper: import("@/lib/api").Paper }) {
+  const href = paper.doi
+    ? `https://doi.org/${paper.doi}`
+    : paper.url
+    ? paper.url
+    : paper.paper_id
+    ? `https://openalex.org/${paper.paper_id}`
+    : null;
+
+  if (!href) return null;
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="查看原文"
+      className="shrink-0 text-slate-400 transition-all duration-200 hover:text-purple-400 hover:translate-x-0.5 hover:-translate-y-0.5"
+    >
+      <ExternalLink size={14} />
+    </a>
+  );
+}
+
+/** 加载中标题："正在分析中" + 跳动省略号（.  ..  ...  循环） */
+function AnimatedTitle() {
+  const [dots, setDots] = useState("");
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setDots((prev) => (prev.length >= 3 ? "" : prev + "."));
+    }, 400);
+    return () => clearInterval(id);
+  }, []);
+
+  return <h2 className="mb-6 text-2xl font-semibold">正在分析中{dots}</h2>;
+}
+
 interface StatCardProps {
   label: string;
   value: number;
@@ -405,7 +516,7 @@ function StatCard({ label, value, color }: StatCardProps) {
 
   return (
     <div
-      className={`rounded-xl border bg-gradient-to-br p-4 backdrop-blur-md ${colorMap[color]}`}
+      className={`rounded-xl border bg-gradient-to-br p-4 backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-purple-500/10 ${colorMap[color]}`}
     >
       <div className="text-xs uppercase tracking-wider text-slate-400">
         {label}

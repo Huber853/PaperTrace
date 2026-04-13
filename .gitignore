@@ -44,6 +44,10 @@ pnpm-debug.log*
 *.sqlite
 *.sqlite3
 
+# ===== 本地缓存（fetcher / 其它模块的 JSON 文件缓存）=====
+# 缓存只在本机有意义，跨机器同步反而会让"陈旧的数据"复活
+backend/cache/
+
 # ===== 编辑器/IDE =====
 .vscode/
 .idea/

@@ -63,6 +63,7 @@ from database import (
 from extractor import extract_claims
 from contradiction import build_matrix
 from generator import generate_review
+from timeline import build_timeline
 
 
 # ===== 创建 FastAPI 应用 =====
@@ -115,6 +116,11 @@ class AnalyzeRequest(BaseModel):
     """POST /api/analyze 的请求体。"""
     query: str = Field(..., min_length=1, max_length=300, description="研究问题关键词")
     limit: int = Field(20, ge=1, le=50, description="拉多少篇论文，1~50")
+    refresh: bool = Field(
+        False,
+        description="True 时跳过本地缓存，强制重新调外部数据源。前端的"
+                    "'刷新数据'按钮会带这个参数。",
+    )
 
 
 class AnalyzeResponse(BaseModel):
@@ -143,6 +149,9 @@ class PaperOut(BaseModel):
     year: int | None
     authors: list[str]
     citation_count: int
+    doi: str | None = None
+    url: str | None = None
+    source: str | None = None
 
 
 class ClaimOut(BaseModel):
@@ -162,6 +171,15 @@ class RelationOut(BaseModel):
     reason: str
 
 
+class TimelinePoint(BaseModel):
+    """时间轴上的一个年份数据点。"""
+    year: int
+    positive: int
+    negative: int
+    neutral: int
+    total: int
+
+
 class ResultResponse(BaseModel):
     """GET /api/result/{task_id} 的响应。"""
     task_id: str
@@ -170,6 +188,8 @@ class ResultResponse(BaseModel):
     claims: list[ClaimOut]
     matrix: list[list[RelationOut]]   # claims 顺序对齐
     stats: dict
+    timeline: list[TimelinePoint]     # 观点演化时间轴
+    data_fetched_at: str  # ISO 8601 时间戳；这批论文最初是何时从源拉到的
 
 
 class ReviewResponse(BaseModel):
@@ -208,17 +228,23 @@ def _update_task(task_id: str, **fields):
 
 
 # ===== 后台任务：完整分析流水线 =====
-async def _run_analysis(task_id: str, query: str, limit: int):
+async def _run_analysis(task_id: str, query: str, limit: int, refresh: bool = False):
     """
     后台任务函数。
     被 BackgroundTasks 调用，在 HTTP 响应发出去之后才开始执行。
     任何一步出错都会被捕获并更新任务状态。
+
+    refresh=True 时会把 refresh 透传给 search_papers，跳过本地缓存。
     """
     try:
         _update_task(task_id, status="running", progress="正在搜索论文 ...")
 
         # === 第 1 步：拉论文 ===
-        papers_raw = await search_papers(query, limit=limit)
+        # search_papers 现在返回 (papers, fetched_at) 元组
+        # fetched_at 用于前端展示 "数据获取于 XX 时间"
+        papers_raw, data_fetched_at = await search_papers(
+            query, limit=limit, refresh=refresh
+        )
         if not papers_raw:
             _update_task(
                 task_id,
@@ -344,6 +370,8 @@ async def _run_analysis(task_id: str, query: str, limit: int):
             session.close()
 
         # === 第 7 步：组装结果，存入 TASKS ===
+        # papers_raw 有 doi/url/source 等额外字段，DB 里没存，需要合并回来
+        raw_by_id = {p["paperId"]: p for p in papers_raw}
         result = {
             "task_id": task_id,
             "query": query,
@@ -356,6 +384,9 @@ async def _run_analysis(task_id: str, query: str, limit: int):
                     "year": p.year,
                     "authors": [a for a in p.authors.split(", ") if a],
                     "citation_count": p.citation_count,
+                    "doi": raw_by_id.get(p.paper_id, {}).get("doi"),
+                    "url": raw_by_id.get(p.paper_id, {}).get("url"),
+                    "source": raw_by_id.get(p.paper_id, {}).get("source"),
                 }
                 for p in db_papers
             ],
@@ -385,6 +416,17 @@ async def _run_analysis(task_id: str, query: str, limit: int):
                     if matrix[i][j]["relation"] == "support"
                 ),
             },
+            # 观点演化时间轴：把每条 claim 按论文年份聚合
+            "timeline": build_timeline(
+                [
+                    {"id": c.id, "paper_id": c.paper_id, "direction": c.direction}
+                    for c in all_claim_rows
+                ],
+                {p.id: p.year for p in db_papers},
+            ),
+            # 从 search_papers 透传上来的"数据原始获取时间"
+            # 缓存命中时是当初写缓存的时间，未命中或 refresh=True 时是"刚刚"
+            "data_fetched_at": data_fetched_at,
         }
 
         _update_task(
@@ -425,12 +467,18 @@ async def analyze(req: AnalyzeRequest, background_tasks: BackgroundTasks):
 
     # add_task 把函数加入"响应发出后再执行"的队列
     # 注意：传函数本身和参数，FastAPI 自己会 await 它
-    background_tasks.add_task(_run_analysis, task_id, req.query, req.limit)
+    background_tasks.add_task(
+        _run_analysis, task_id, req.query, req.limit, req.refresh
+    )
 
     return AnalyzeResponse(
         task_id=task_id,
         status="pending",
-        message="任务已提交，请用 /api/task/{task_id} 查询进度",
+        message=(
+            "任务已提交（强制刷新），请用 /api/task/{task_id} 查询进度"
+            if req.refresh
+            else "任务已提交，请用 /api/task/{task_id} 查询进度"
+        ),
     )
 
 

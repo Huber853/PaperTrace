@@ -15,8 +15,12 @@ starlette==1.0.0            # FastAPI 底层依赖（CORS、BackgroundTasks 都�
 pydantic==2.12.5            # 请求/响应模型
 pydantic_core==2.41.5       # pydantic 的 Rust 实现，跟着 pydantic 走
 
+# ---- 数据源解析 ----
+feedparser==6.0.12          # 解析 arXiv 返回的 Atom XML（备用源用）
+sgmllib3k==1.0.0            # feedparser 的依赖
+
 # ---- HTTP 客户端 ----
-httpx==0.28.1               # 异步 HTTP 客户端（请 Semantic Scholar / DeepSeek）
+httpx==0.28.1               # 异步 HTTP 客户端（请 OpenAlex / arXiv / DeepSeek）
 httpcore==1.0.9             # httpx 底层
 h11==0.16.0                 # HTTP/1.1 协议
 anyio==4.13.0               # async IO 基础库
