@@ -180,3 +180,17 @@ export async function getReview(taskId: string): Promise<ReviewResponse> {
   );
   return data;
 }
+
+export async function exportReport(taskId: string, format: "md" = "md"): Promise<{ blob: Blob; filename: string }> {
+  const resp = await http.get(`/api/export/${taskId}`, {
+    params: { format },
+    responseType: "blob",
+  });
+  const cd: string = resp.headers["content-disposition"] || "";
+  let filename = `PaperTrace_报告_${taskId}.md`;
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  if (m) {
+    try { filename = decodeURIComponent(m[1]); } catch {}
+  }
+  return { blob: resp.data as Blob, filename };
+}

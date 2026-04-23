@@ -50,6 +50,8 @@ from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from urllib.parse import quote
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -265,6 +267,12 @@ async def _run_analysis(task_id: str, query: str, limit: int, refresh: bool = Fa
                     select(Paper).where(Paper.paper_id == p["paperId"])
                 )
                 if existing:
+                    if refresh:
+                        existing.title = p["title"]
+                        existing.abstract = p["abstract"]
+                        existing.year = p["year"]
+                        existing.authors = ", ".join(p["authors"])
+                        existing.citation_count = p["citationCount"]
                     db_papers.append(existing)
                     continue
                 row = Paper(
@@ -347,7 +355,7 @@ async def _run_analysis(task_id: str, query: str, limit: int, refresh: bool = Fa
             }
             for c in all_claim_rows
         ]
-        matrix = await build_matrix(claims_for_matrix)
+        matrix = await build_matrix(claims_for_matrix, refresh=refresh)
 
         # === 第 6 步：把非平凡的关系写入 contradictions 表（只存 i<j 的上三角）===
         session = get_session()
@@ -555,6 +563,160 @@ async def get_review(task_id: str):
     task["updated_at"] = _now_iso()
 
     return ReviewResponse(task_id=task_id, review=review_text, cached=False)
+
+
+# ===== 接口 5：GET /api/export/{task_id} =====
+def _build_markdown_report(task_id: str, result: dict, review_text: str | None) -> str:
+    query = result.get("query", "")
+    papers = result.get("papers", []) or []
+    claims = result.get("claims", []) or []
+    matrix = result.get("matrix", []) or []
+    stats = result.get("stats", {}) or {}
+    fetched_at = result.get("data_fetched_at", "")
+
+    paper_by_id = {p["id"]: p for p in papers}
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    lines: list[str] = []
+    lines.append(f"# PaperTrace 分析报告")
+    lines.append("")
+    lines.append(f"**研究问题**：{query}  ")
+    lines.append(f"**生成时间**：{now_str}  ")
+    if fetched_at:
+        lines.append(f"**数据获取于**：{fetched_at}  ")
+    lines.append(f"**任务 ID**：`{task_id}`")
+    lines.append("")
+    lines.append(
+        f"> 共检索 {stats.get('papers_count', len(papers))} 篇论文，"
+        f"抽取 {stats.get('claims_count', len(claims))} 条核心主张，"
+        f"发现 {stats.get('contradict_pairs', 0)} 对矛盾、"
+        f"{stats.get('support_pairs', 0)} 对支持关系。"
+    )
+    lines.append("")
+
+    lines.append("## 一、检索到的论文列表")
+    lines.append("")
+    if not papers:
+        lines.append("_（无）_")
+    else:
+        for i, p in enumerate(papers, 1):
+            authors = ", ".join((p.get("authors") or [])[:5])
+            if len(p.get("authors") or []) > 5:
+                authors += " 等"
+            year = p.get("year") or "—"
+            doi = p.get("doi")
+            url = p.get("url")
+            link = None
+            if doi:
+                link = f"https://doi.org/{doi}"
+            elif url:
+                link = url
+            title = p.get("title", "")
+            title_line = f"**[{title}]({link})**" if link else f"**{title}**"
+            lines.append(f"{i}. {title_line}")
+            lines.append(f"   - 作者：{authors or '—'}")
+            lines.append(f"   - 年份：{year}")
+            if doi:
+                lines.append(f"   - DOI：`{doi}`")
+            if p.get("citation_count"):
+                lines.append(f"   - 引用数：{p['citation_count']}")
+    lines.append("")
+
+    lines.append("## 二、核心主张列表")
+    lines.append("")
+    if not claims:
+        lines.append("_（无）_")
+    else:
+        dir_label = {"positive": "支持", "negative": "反对", "neutral": "中立"}
+        for i, c in enumerate(claims, 1):
+            paper = paper_by_id.get(c.get("paper_id"))
+            paper_title = paper.get("title", "") if paper else ""
+            direction = dir_label.get(c.get("direction", ""), c.get("direction", ""))
+            lines.append(f"### 主张 #{i} · {direction}")
+            if paper_title:
+                lines.append(f"来源论文：_{paper_title}_")
+            lines.append("")
+            lines.append(f"- **主题**：{c.get('subject', '')}")
+            lines.append(f"- **干预**：{c.get('intervention', '')}")
+            lines.append(f"- **结论**：{c.get('conclusion', '')}")
+            lines.append("")
+
+    lines.append("## 三、矛盾关系摘要")
+    lines.append("")
+    contradictions: list[tuple[int, int, dict]] = []
+    n = len(claims)
+    for i in range(n):
+        for j in range(i + 1, n):
+            try:
+                cell = matrix[i][j]
+            except (IndexError, TypeError):
+                continue
+            if not cell:
+                continue
+            rel = cell.get("relation") if isinstance(cell, dict) else getattr(cell, "relation", None)
+            if rel == "contradict":
+                cell_d = cell if isinstance(cell, dict) else cell.model_dump()
+                contradictions.append((i, j, cell_d))
+    if not contradictions:
+        lines.append("_未发现明显的矛盾关系。_")
+    else:
+        lines.append(f"共发现 **{len(contradictions)}** 对矛盾：")
+        lines.append("")
+        for i, j, cell in contradictions:
+            ci = claims[i]
+            cj = claims[j]
+            pi = paper_by_id.get(ci.get("paper_id"), {})
+            pj = paper_by_id.get(cj.get("paper_id"), {})
+            conf = cell.get("confidence", 0)
+            reason = cell.get("reason", "")
+            lines.append(f"- **主张 #{i+1}** vs **主张 #{j+1}**（置信度 {conf*100:.0f}%）")
+            lines.append(f"  - #{i+1}：{ci.get('conclusion','')}  _（{pi.get('title','')}）_")
+            lines.append(f"  - #{j+1}：{cj.get('conclusion','')}  _（{pj.get('title','')}）_")
+            if reason:
+                lines.append(f"  - AI 判定理由：{reason}")
+    lines.append("")
+
+    lines.append("## 四、AI 综述")
+    lines.append("")
+    if review_text:
+        lines.append(review_text)
+    else:
+        lines.append("_该任务尚未生成综述（请在结果页点击“一键生成综述”后再导出）。_")
+    lines.append("")
+
+    lines.append("---")
+    lines.append("*本报告由 PaperTrace 自动生成。*")
+    return "\n".join(lines)
+
+
+@app.get("/api/export/{task_id}")
+async def export_report(task_id: str, format: str = "md"):
+    """导出分析报告。目前只支持 format=md。"""
+    if format != "md":
+        raise HTTPException(status_code=400, detail=f"暂不支持的导出格式：{format}")
+    task = TASKS.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task["status"] != "done":
+        raise HTTPException(status_code=409, detail=f"任务未完成，当前状态：{task['status']}")
+
+    result = task["result"]
+    md = _build_markdown_report(task_id, result, task.get("review"))
+
+    query = (result.get("query") or "report").strip().replace(" ", "_")
+    safe_query = "".join(ch for ch in query if ch.isalnum() or ch in "_-") or "report"
+    if len(safe_query) > 40:
+        safe_query = safe_query[:40]
+    date_str = datetime.now().strftime("%Y%m%d")
+    filename = f"PaperTrace_报告_{safe_query}_{date_str}.md"
+
+    return Response(
+        content=md.encode("utf-8"),
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )
 
 
 # ===== 健康检查 / 根路径 =====

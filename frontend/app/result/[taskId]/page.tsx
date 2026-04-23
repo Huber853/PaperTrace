@@ -25,6 +25,7 @@ import Link from "next/link";
 import {
   AnalysisResult,
   TaskStatusResponse,
+  exportReport,
   getResult,
   getReview,
   getTaskStatus,
@@ -61,6 +62,7 @@ export default function ResultPage({ params }: PageProps) {
   const [error, setError] = useState<string | null>(null);
   // "刷新数据"按钮的 loading 状态
   const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   // 用 ref 存 interval id，避免触发额外渲染
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -184,6 +186,27 @@ export default function ResultPage({ params }: PageProps) {
     }
   };
 
+  const handleExport = async () => {
+    if (!result) return;
+    setExporting(true);
+    try {
+      const { blob, filename } = await exportReport(taskId, "md");
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "导出失败";
+      setError(message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // 点击"生成综述"按钮：调后端 /api/review
   const handleGenerateReview = async () => {
     setReviewLoading(true);
@@ -274,22 +297,38 @@ export default function ResultPage({ params }: PageProps) {
               </p>
             )}
           </div>
-          {/* 刷新数据按钮 */}
-          <button
-            type="button"
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="shrink-0 rounded-lg border border-purple-400/40 bg-purple-500/10 px-4 py-2 text-sm font-medium text-purple-200 transition-all duration-200 hover:-translate-y-0.5 hover:border-purple-300/60 hover:bg-purple-500/20 hover:shadow-lg hover:shadow-purple-500/20 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
-          >
-            {refreshing ? (
-              <span className="flex items-center gap-2">
-                <span className="h-3 w-3 animate-spin rounded-full border-2 border-purple-300/40 border-t-purple-300" />
-                刷新中 ...
-              </span>
-            ) : (
-              "🔄 刷新数据"
-            )}
-          </button>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleExport}
+              disabled={exporting}
+              className="shrink-0 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-200 transition-all duration-200 hover:-translate-y-0.5 hover:border-emerald-300/60 hover:bg-emerald-500/20 hover:shadow-lg hover:shadow-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+            >
+              {exporting ? (
+                <span className="flex items-center gap-2">
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-emerald-300/40 border-t-emerald-300" />
+                  导出中 ...
+                </span>
+              ) : (
+                "📥 导出报告"
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="shrink-0 rounded-lg border border-purple-400/40 bg-purple-500/10 px-4 py-2 text-sm font-medium text-purple-200 transition-all duration-200 hover:-translate-y-0.5 hover:border-purple-300/60 hover:bg-purple-500/20 hover:shadow-lg hover:shadow-purple-500/20 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+            >
+              {refreshing ? (
+                <span className="flex items-center gap-2">
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-purple-300/40 border-t-purple-300" />
+                  刷新中 ...
+                </span>
+              ) : (
+                "🔄 刷新数据"
+              )}
+            </button>
+          </div>
         </div>
 
         {/* 统计卡片 */}

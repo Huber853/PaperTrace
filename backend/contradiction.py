@@ -194,6 +194,7 @@ async def judge_relation(
     claim_a: dict,
     claim_b: dict,
     client: httpx.AsyncClient | None = None,
+    refresh: bool = False,
 ) -> dict:
     """
     判断两条 claim 之间的关系。
@@ -216,7 +217,7 @@ async def judge_relation(
 
     # 优化 2：缓存命中（用 frozenset 实现 a/b 对称）
     cache_key = frozenset({_claim_signature(claim_a), _claim_signature(claim_b)})
-    if cache_key in _RELATION_CACHE:
+    if not refresh and cache_key in _RELATION_CACHE:
         return _RELATION_CACHE[cache_key]
 
     # 构造 user message：把两条 claim 格式化得清清楚楚
@@ -281,7 +282,7 @@ async def judge_relation(
 
 
 # ===== 核心函数 2：构建 N×N 矩阵 =====
-async def build_matrix(claims: list[dict]) -> list[list[dict]]:
+async def build_matrix(claims: list[dict], refresh: bool = False) -> list[list[dict]]:
     """
     对一组 claim 两两判定，返回 N×N 的关系矩阵。
 
@@ -326,7 +327,7 @@ async def build_matrix(claims: list[dict]) -> list[list[dict]]:
 
         async def _judge_with_limit(i: int, j: int):
             async with semaphore:
-                result = await judge_relation(claims[i], claims[j], client=client)
+                result = await judge_relation(claims[i], claims[j], client=client, refresh=refresh)
                 return i, j, result
 
         # asyncio.gather 并发执行所有判定
