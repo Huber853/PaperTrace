@@ -119,9 +119,13 @@ export default function HomePage() {
             PaperTrace
           </h1>
 
-          <p className="mt-4 text-sm text-slate-400">
-            学术论文矛盾发现工具 · 自动拉论文、抽主张、画矛盾矩阵、生成综述
-          </p>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+            {["📊 多源数据融合", "🔍 观点矛盾识别", "📈 可视化分析", "✍️ 自动综述生成"].map((tag) => (
+              <span key={tag} className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-400">
+                {tag}
+              </span>
+            ))}
+          </div>
         </div>
 
         {/* 搜索卡片 —— 玻璃拟态:backdrop-blur-xl + 半透明白底 + 半透明白边框 */}
