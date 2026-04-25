@@ -12,9 +12,13 @@
  */
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { startAnalysis } from "@/lib/api";
+import HeroSplash from "@/components/HeroSplash";
+
+// 同一会话只展示启动屏一次, 二次进入直接跳过
+const SPLASH_SESSION_KEY = "papertrace.splash.seen";
 
 // —— 可快速编辑的常量 —— //
 const SUGGESTED_QUERIES = [
@@ -31,6 +35,24 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
   const router = useRouter();
+
+  // 启动屏: 默认显示 (SSR 不读 sessionStorage); 客户端挂载后查 sessionStorage,
+  // 已看过则立即收起, 避免 hydration 错配
+  const [showSplash, setShowSplash] = useState(true);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.sessionStorage.getItem(SPLASH_SESSION_KEY) === "1") {
+      setShowSplash(false);
+    }
+  }, []);
+  const dismissSplash = () => {
+    setShowSplash(false);
+    try {
+      window.sessionStorage.setItem(SPLASH_SESSION_KEY, "1");
+    } catch {
+      /* sessionStorage 不可用时忽略 */
+    }
+  };
 
   const submit = async (overrideQuery?: string) => {
     const finalQuery = (overrideQuery ?? query).trim();
@@ -51,6 +73,10 @@ export default function HomePage() {
   };
 
   return (
+    <>
+      {/* 启动屏: 粒子网络 + 浮动论文 + 序列动画, 点 CTA 后淡出 */}
+      {showSplash && <HeroSplash onEnter={dismissSplash} />}
+
     <div
       className="relative flex min-h-screen flex-col text-text-primary"
       style={{
@@ -109,55 +135,14 @@ export default function HomePage() {
         </div>
       </nav>
 
-      {/* ===== 主内容 (整体居中) ===== */}
-      <main className="relative z-10 mx-auto flex w-full max-w-[760px] flex-1 flex-col items-center px-6 py-12 md:py-20">
-        {/* Hero · 居中 */}
-        <section className="w-full text-center">
-          {/* 顶部小标签 */}
-          <div className="inline-flex items-center gap-2 rounded-full border border-border/80 bg-bg-surface/40 px-3 py-1 text-11 backdrop-blur-sm">
-            <span className="h-[6px] w-[6px] rounded-full bg-accent-support shadow-[0_0_8px_rgba(74,222,128,0.6)]" />
-            <span className="text-text-secondary">research tool</span>
-            <span className="text-text-muted">·</span>
-            <span className="num text-text-primary">v0.1</span>
-          </div>
-
-          {/* 主标题: 三色立场词 */}
-          <h1 className="mt-6 text-28 font-medium tracking-tight md:text-36">
-            发现学术论文之间
-            <br />
-            真正的
-            <span className="text-accent-conflict">争论</span>
-            <span className="text-text-muted">、</span>
-            <span className="text-accent-support">共识</span>
-            <span className="text-text-muted"> 与</span>
-            <span className="text-brand">分歧</span>
-          </h1>
-
-          {/* 副标题: 衬线 + 关键词高�� */}
-          <p className="mx-auto mt-5 max-w-xl font-serif text-15 leading-relaxed text-text-secondary md:text-[16px] md:leading-[28px]">
-            输入一个研究问题, 自动检索论文、抽取
-            <span className="text-text-primary">核心主张</span>、识别彼此之间的
-            <span className="text-accent-conflict">矛盾</span>与
-            <span className="text-accent-support">共识</span>,
-            并生成可追溯引用的
-            <span className="text-brand">综述段落</span>。
-          </p>
-
-          {/* 一行流程指示 */}
-          <div className="mt-7 flex flex-wrap items-center justify-center gap-x-1 gap-y-2 text-11 text-text-muted">
-            <FlowChip color="#B4AEFF" label="检索" />
-            <Arrow />
-            <FlowChip color="#7DD3FC" label="抽取" />
-            <Arrow />
-            <FlowChip color="#FFB547" label="判定" />
-            <Arrow />
-            <FlowChip color="#4ADE80" label="综述" />
-          </div>
-        </section>
-
+      {/* ===== 主内容 (整体居中) =====
+       * Hero (徽章 / 三色标题 / 副标题 / 流程链) 已经在 HeroSplash 启动屏里展示过,
+       * 这里不再重复, 用户从 splash 进入后直接看到输入卡, 节奏更紧凑.
+       */}
+      <main className="relative z-10 mx-auto flex w-full max-w-[760px] flex-1 flex-col items-center px-6 py-10 md:py-16">
         {/* 输入卡 */}
         <section
-          className="relative mt-12 w-full overflow-hidden rounded-lg border bg-bg-surface transition-colors"
+          className="relative w-full overflow-hidden rounded-lg border bg-bg-surface transition-colors"
           style={{
             borderColor: focused ? "rgba(180,174,255,0.45)" : "rgba(36,40,69,1)",
             boxShadow: focused
@@ -209,7 +194,7 @@ export default function HomePage() {
                     type="button"
                     onClick={() => setQuery(q)}
                     disabled={submitting}
-                    className="group inline-flex items-center gap-1.5 rounded-sm border border-border bg-bg-elevated/40 px-2.5 py-1 text-12 text-text-secondary transition-colors hover:border-bord[...]
+                    className="group inline-flex items-center gap-1.5 rounded-sm border border-border bg-bg-elevated/40 px-2.5 py-1 text-12 text-text-secondary transition-colors hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary disabled:opacity-60"
                   >
                     <span
                       aria-hidden
@@ -256,7 +241,7 @@ export default function HomePage() {
                 type="button"
                 onClick={() => submit()}
                 disabled={submitting}
-                className="group relative w-full overflow-hidden rounded border border-brand/60 bg-brand/10 px-5 py-3 text-15 font-medium text-brand transition-all hover:bg-brand/20 hover:shadow-[...]
+                className="group relative w-full overflow-hidden rounded border border-brand/60 bg-brand/10 px-5 py-3 text-15 font-medium text-brand transition-all hover:bg-brand/20 hover:shadow-[0_0_24px_-6px_rgba(180,174,255,0.5)] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {submitting ? (
                   <span className="flex items-center justify-center gap-2">
@@ -427,6 +412,7 @@ export default function HomePage() {
         </div>
       </footer>
     </div>
+    </>
   );
 }
 
@@ -441,23 +427,6 @@ function LogoMark() {
       <circle cx="11" cy="11" r="1.5" fill="#B4AEFF" />
     </svg>
   );
-}
-
-function FlowChip({ color, label }: { color: string; label: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <span
-        aria-hidden
-        className="h-[6px] w-[6px] rounded-full"
-        style={{ background: color }}
-      />
-      <span className="text-text-secondary">{label}</span>
-    </span>
-  );
-}
-
-function Arrow() {
-  return <span className="px-1 text-text-muted">→</span>;
 }
 
 function CornerBracket({ pos }: { pos: "tl" | "tr" | "bl" | "br" }) {

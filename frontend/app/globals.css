@@ -88,3 +88,54 @@ input:-webkit-autofill:focus {
     text-wrap: balance;
   }
 }
+
+/* ============================================================
+   首屏启动覆盖层 (HeroSplash) 用的关键帧
+   - 序列渐入 / pulse / shimmer / float
+============================================================ */
+@keyframes splash-fade-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes splash-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+@keyframes splash-shimmer {
+  0%        { transform: translateX(-100%); }
+  30%, 100% { transform: translateX(200%); }
+}
+@keyframes splash-float {
+  0%, 100% { transform: translateY(0) rotate(var(--rot, 0deg)); }
+  50%      { transform: translateY(var(--dy, -10px)) rotate(calc(var(--rot, 0deg) + 3deg)); }
+}
+
+.splash-fade-1 { opacity: 0; animation: splash-fade-up 0.8s 0.30s forwards cubic-bezier(.4,0,.2,1); }
+.splash-fade-2 { opacity: 0; animation: splash-fade-up 0.9s 0.50s forwards cubic-bezier(.4,0,.2,1); }
+.splash-fade-3 { opacity: 0; animation: splash-fade-up 0.8s 0.80s forwards cubic-bezier(.4,0,.2,1); }
+.splash-fade-4 { opacity: 0; animation: splash-fade-up 0.8s 1.00s forwards cubic-bezier(.4,0,.2,1); }
+.splash-fade-5 { opacity: 0; animation: splash-fade-up 0.8s 1.20s forwards cubic-bezier(.4,0,.2,1); }
+
+.splash-pulse-dot { animation: splash-pulse 2s infinite; }
+
+.splash-shimmer-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.22), transparent);
+  animation: splash-shimmer 3s infinite;
+}
+
+.splash-paper {
+  animation: splash-float var(--dur, 6s) var(--delay, 0s) ease-in-out infinite;
+}
+
+/* 留意 reduced-motion: 用户不喜欢动画时, 静态显示, 跳过动画 */
+@media (prefers-reduced-motion: reduce) {
+  .splash-fade-1, .splash-fade-2, .splash-fade-3, .splash-fade-4, .splash-fade-5 {
+    opacity: 1; animation: none;
+  }
+  .splash-pulse-dot, .splash-shimmer-bar, .splash-paper { animation: none; }
+}
