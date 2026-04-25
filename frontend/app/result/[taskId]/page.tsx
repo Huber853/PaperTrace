@@ -1,16 +1,22 @@
 /**
- * PaperTrace 结果页 (v2)
- * ==========================
+ * PaperTrace 结果页 (v3 · sidebar-driven)
+ * ============================================
  * 顶部栏: [← 返回] [状态胶囊] [研究问题] [元信息] [导出 ▾] [刷新]
  *
- * 模块顺序:
- *   01 · 四项指标 (矛盾对卡片带 2px 琥珀左条)
- *   02 · 观点分布条 (OpinionBar)
- *   03 · 核心矛盾对 (ContradictionCards)
- *   04 · 争论网络图 (DebateNetwork)
- *   05 · AI 智能解读 (综述段落 + 研究方向建议, 合并在同一容器)
- *   06 · 论文列表 (Tab: 全部 / 高争议 / 核心)
- *   07 · 所有主张 (可折叠)
+ * 改用左侧 sticky 导航 + 单板块视图:
+ *   ◇ 概览       (MetricsGrid + OpinionBar)
+ *   ✕ 核心矛盾   (ContradictionCards, 带矛盾对数量徽章)
+ *   ◉ 矛盾网络   (DebateNetwork, ECharts 力导向)
+ *   ✦ AI 智能解读(综述 + 研究方向建议合并)
+ *   ▤ 论文列表   (Tab: 全部 / 高争议 / 核心)
+ *   ≡ 全部主张   (展开列表, 主张数量徽章)
+ *   ▦ 关系矩阵   (N×N 热力图)
+ *
+ * 桌面端 (md+): 220px 左侧 sticky 栏, 内容区独占右侧
+ * 移动端 (< md): 顶部水平横向滚动 chip, 下方内容区
+ *
+ * 状态: 仅渲染当前活动板块, 切换时其他板块卸载. AiReview 后端已缓存,
+ *      重新挂载会自动从缓存秒返回.
  */
 "use client";
 
@@ -144,80 +150,288 @@ export default function ResultPage({ params }: PageProps) {
   }
 
   return (
+    <ResultLayout
+      taskId={taskId}
+      result={result}
+      onRefresh={handleRefresh}
+      refreshing={refreshing}
+      onExport={handleExport}
+      exporting={exporting}
+    />
+  );
+}
+
+/* ====================================================== */
+/* 结果页主布局: 顶栏 + (左 sidebar | 右内容) + 底栏           */
+/* ====================================================== */
+type SectionId =
+  | "overview"
+  | "contradictions"
+  | "network"
+  | "ai"
+  | "papers"
+  | "claims"
+  | "matrix";
+
+function ResultLayout({
+  taskId,
+  result,
+  onRefresh,
+  refreshing,
+  onExport,
+  exporting,
+}: {
+  taskId: string;
+  result: AnalysisResult;
+  onRefresh: () => void;
+  refreshing: boolean;
+  onExport: (fmt: ExportFormat) => void;
+  exporting: ExportFormat | null;
+}) {
+  const [active, setActive] = useState<SectionId>("overview");
+
+  // 计算每个 section 的徽章数 (只算高置信度矛盾)
+  const counts = useMemo(() => {
+    let contradictPairs = 0;
+    const n = result.claims.length;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const cell = result.matrix?.[i]?.[j];
+        if (cell?.relation === "contradict" && cell.confidence >= 0.5) {
+          contradictPairs++;
+        }
+      }
+    }
+    return {
+      contradictions: contradictPairs,
+      papers: result.papers.length,
+      claims: result.claims.length,
+    };
+  }, [result]);
+
+  // 切换板块时滚动到内容顶部
+  const onChangeSection = (id: SectionId) => {
+    setActive(id);
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+
+  return (
     <div className="min-h-screen bg-bg-base text-text-primary">
       <TopBar
         query={result.query}
         dataFetchedAt={result.data_fetched_at}
-        onRefresh={handleRefresh}
+        onRefresh={onRefresh}
         refreshing={refreshing}
-        onExport={handleExport}
+        onExport={onExport}
         exporting={exporting}
       />
 
-      <main className="mx-auto w-full max-w-[1200px] space-y-10 px-6 py-10">
-        {/* 模块 01 · 四项指标 */}
-        <MetricsGrid result={result} />
+      <div className="mx-auto w-full max-w-[1400px] px-4 py-6 md:px-6 md:py-8">
+        <div className="flex flex-col gap-6 md:flex-row md:items-start md:gap-8">
+          {/* 左侧导航 */}
+          <Sidebar active={active} onChange={onChangeSection} counts={counts} />
 
-        {/* 模块 02 · 观点分布条 */}
-        <section className="rounded-lg border border-border bg-bg-surface p-6">
-          <OpinionBar claims={result.claims} />
-        </section>
+          {/* 右侧内容区 */}
+          <main className="min-w-0 flex-1">
+            {active === "overview" && <OverviewSection result={result} />}
 
-        {/* 模块 03 · 核心矛盾对 */}
-        <ContradictionCards
-          claims={result.claims}
-          matrix={result.matrix}
-          papers={result.papers}
-        />
+            {active === "contradictions" && (
+              <ContradictionCards
+                claims={result.claims}
+                matrix={result.matrix}
+                papers={result.papers}
+              />
+            )}
 
-        {/* 模块 04 · 争论网络图 */}
-        <DebateNetwork
-          claims={result.claims}
-          matrix={result.matrix}
-          papers={result.papers}
-        />
+            {active === "network" && (
+              <DebateNetwork
+                claims={result.claims}
+                matrix={result.matrix}
+                papers={result.papers}
+              />
+            )}
 
-        {/* 模块 05 · AI 智能解读 (综述 + 研究方向建议) */}
-        <AiInsightsSection
-          taskId={taskId}
-          query={result.query}
-          claims={result.claims}
-          matrix={result.matrix}
-          papers={result.papers}
-        />
+            {active === "ai" && (
+              <AiInsightsSection
+                taskId={taskId}
+                query={result.query}
+                claims={result.claims}
+                matrix={result.matrix}
+                papers={result.papers}
+              />
+            )}
 
-        {/* 模块 06 · 论文列表 */}
-        <PapersList papers={result.papers} claims={result.claims} matrix={result.matrix} />
+            {active === "papers" && (
+              <PapersList
+                papers={result.papers}
+                claims={result.claims}
+                matrix={result.matrix}
+              />
+            )}
 
-        {/* 模块 07 · 所有主张 (折叠) */}
-        <AllClaims claims={result.claims} papers={result.papers} />
+            {active === "claims" && (
+              <AllClaims claims={result.claims} papers={result.papers} forceOpen />
+            )}
 
-        {/* 关系矩阵 (保留, 放在最底方便答辩) */}
-        <section className="rounded-lg border border-border bg-bg-surface">
-          <header className="border-b border-border px-6 py-4">
-            <h2 className="text-17 font-medium">N × N 关系矩阵</h2>
-          </header>
-          <div className="bg-bg-inset">
-            <ContradictionMatrix
-              claims={result.claims}
-              matrix={result.matrix}
-              paperTitleById={Object.fromEntries(
-                result.papers.map((p) => [p.id, p.title])
-              )}
-              papers={result.papers}
-            />
-          </div>
-        </section>
-      </main>
+            {active === "matrix" && (
+              <section className="rounded-lg border border-border bg-bg-surface">
+                <header className="border-b border-border px-6 py-4">
+                  <h2 className="text-17 font-medium">N × N 关系矩阵</h2>
+                  <p className="mt-1 text-11 text-text-muted">
+                    每个格子表示一对主张的关系: 红=矛盾、绿=支持、灰=无关; 颜色深度即置信度
+                  </p>
+                </header>
+                <div className="bg-bg-inset">
+                  <ContradictionMatrix
+                    claims={result.claims}
+                    matrix={result.matrix}
+                    paperTitleById={Object.fromEntries(
+                      result.papers.map((p) => [p.id, p.title])
+                    )}
+                    papers={result.papers}
+                  />
+                </div>
+              </section>
+            )}
+          </main>
+        </div>
+      </div>
 
       <footer className="border-t border-border">
-        <div className="mx-auto flex max-w-[1200px] items-center justify-between px-6 py-4 text-11 text-text-muted">
+        <div className="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-4 text-11 text-text-muted">
           <Link href="/" className="hover:text-text-primary">
             ← 返回首页
           </Link>
           <span className="num">PaperTrace · task {taskId.slice(0, 8)}</span>
         </div>
       </footer>
+    </div>
+  );
+}
+
+/* ====================================================== */
+/* 左侧 sidebar 导航                                         */
+/* ====================================================== */
+const SECTIONS: ReadonlyArray<{
+  id: SectionId;
+  label: string;
+  icon: string;
+  color: string;
+  badgeKey?: "contradictions" | "papers" | "claims";
+}> = [
+  { id: "overview",       label: "概览",        icon: "◇", color: "#B4AEFF" },
+  { id: "contradictions", label: "核心矛盾",    icon: "✕", color: "#FFB547", badgeKey: "contradictions" },
+  { id: "network",        label: "矛盾网络",    icon: "◉", color: "#FFB547" },
+  { id: "ai",             label: "AI 智能解读", icon: "✦", color: "#4ADE80" },
+  { id: "papers",         label: "论文列表",    icon: "▤", color: "#7DD3FC", badgeKey: "papers" },
+  { id: "claims",         label: "全部主张",    icon: "≡", color: "#A5A9C4", badgeKey: "claims" },
+  { id: "matrix",         label: "关系矩阵",    icon: "▦", color: "#B4AEFF" },
+] as const;
+
+function Sidebar({
+  active,
+  onChange,
+  counts,
+}: {
+  active: SectionId;
+  onChange: (id: SectionId) => void;
+  counts: { contradictions: number; papers: number; claims: number };
+}) {
+  return (
+    <aside className="w-full md:w-[220px] md:shrink-0">
+      <nav className="rounded-lg border border-border bg-bg-surface/60 backdrop-blur md:sticky md:top-[78px]">
+        <div className="hidden border-b border-border px-4 py-3 md:block">
+          <div className="eyebrow">navigate</div>
+          <div className="mt-1 text-12 text-text-secondary">板块导航</div>
+        </div>
+        {/* 移动端: 横向滚动 chip; 桌面端: 纵向列表 */}
+        <ul className="flex gap-1 overflow-x-auto p-2 md:flex-col md:gap-0 md:p-2">
+          {SECTIONS.map((s) => {
+            const isActive = active === s.id;
+            const badge = s.badgeKey ? counts[s.badgeKey] : null;
+            return (
+              <li key={s.id} className="md:w-full">
+                <button
+                  type="button"
+                  onClick={() => onChange(s.id)}
+                  aria-current={isActive ? "page" : undefined}
+                  className="group relative flex w-full items-center gap-2.5 whitespace-nowrap rounded-sm px-3 py-2 text-13 transition-colors"
+                  style={{
+                    background: isActive ? "rgba(180,174,255,0.10)" : "transparent",
+                    color: isActive ? "#E8E9F3" : "#A5A9C4",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isActive) {
+                      e.currentTarget.style.background = "rgba(180,174,255,0.05)";
+                      e.currentTarget.style.color = "#E8E9F3";
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isActive) {
+                      e.currentTarget.style.background = "transparent";
+                      e.currentTarget.style.color = "#A5A9C4";
+                    }
+                  }}
+                >
+                  {/* 左侧 2px accent 色条 (仅桌面端激活态) */}
+                  {isActive && (
+                    <span
+                      aria-hidden
+                      className="absolute left-0 top-1 hidden h-[calc(100%-8px)] w-[2px] rounded-sm md:block"
+                      style={{ background: s.color }}
+                    />
+                  )}
+                  <span
+                    aria-hidden
+                    className="text-14 leading-none"
+                    style={{ color: s.color }}
+                  >
+                    {s.icon}
+                  </span>
+                  <span className="flex-1 text-left">{s.label}</span>
+                  {badge !== null && badge > 0 && (
+                    <span
+                      className="num rounded-sm px-1.5 py-[1px] text-10"
+                      style={{
+                        background: isActive
+                          ? `${s.color}22`
+                          : "rgba(255,255,255,0.04)",
+                        color: isActive ? s.color : "#6B6F8A",
+                      }}
+                    >
+                      {badge}
+                    </span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+    </aside>
+  );
+}
+
+/* ====================================================== */
+/* 概览板块: MetricsGrid + OpinionBar 合并成一屏              */
+/* ====================================================== */
+function OverviewSection({ result }: { result: AnalysisResult }) {
+  return (
+    <div className="space-y-6">
+      <header>
+        <h1 className="text-22 font-medium text-text-primary md:text-24">
+          研究问题概览
+        </h1>
+        <p className="mt-1 text-12 text-text-muted">
+          四项关键指标 + 主张方向分布,快速把握领域共识与分歧的整体格局
+        </p>
+      </header>
+      <MetricsGrid result={result} />
+      <section className="rounded-lg border border-border bg-bg-surface p-6">
+        <OpinionBar claims={result.claims} />
+      </section>
     </div>
   );
 }
@@ -622,8 +836,17 @@ function paperUrl(p: Paper): string | null {
 /* ====================================================== */
 /* 模块 07 · 所有主张 (默认折叠)                              */
 /* ====================================================== */
-function AllClaims({ claims, papers }: { claims: Claim[]; papers: Paper[] }) {
-  const [open, setOpen] = useState(false);
+function AllClaims({
+  claims,
+  papers,
+  forceOpen = false,
+}: {
+  claims: Claim[];
+  papers: Paper[];
+  /** sidebar 单板块视图下置 true, 默认展开且隐藏折叠按钮 */
+  forceOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(forceOpen);
   const paperById = useMemo(() => {
     const m = new Map<number, Paper>();
     papers.forEach((p) => m.set(p.id, p));
@@ -641,22 +864,34 @@ function AllClaims({ claims, papers }: { claims: Claim[]; papers: Paper[] }) {
     neutral: "中立",
   };
 
+  const showList = forceOpen || open;
   return (
     <section className="rounded-lg border border-border bg-bg-surface">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between px-6 py-4 text-left transition-colors hover:bg-bg-elevated/30"
-      >
-        <h2 className="text-17 font-medium">
-          全部主张 · <span className="num">{claims.length}</span> 条
-        </h2>
-        <span className="text-12 text-text-muted">
-          {open ? "收起 ▴" : "展开 ▾"}
-        </span>
-      </button>
-      {open && (
-        <ol className="divide-y divide-border border-t border-border">
+      {forceOpen ? (
+        <header className="border-b border-border px-6 py-4">
+          <h2 className="text-17 font-medium">
+            全部主张 · <span className="num">{claims.length}</span> 条
+          </h2>
+          <p className="mt-1 text-11 text-text-muted">
+            按抽取顺序展示, 颜色标注每条主张的方向 (支持 / 反对 / 中立)
+          </p>
+        </header>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-center justify-between px-6 py-4 text-left transition-colors hover:bg-bg-elevated/30"
+        >
+          <h2 className="text-17 font-medium">
+            全部主张 · <span className="num">{claims.length}</span> 条
+          </h2>
+          <span className="text-12 text-text-muted">
+            {open ? "收起 ▴" : "展开 ▾"}
+          </span>
+        </button>
+      )}
+      {showList && (
+        <ol className={`divide-y divide-border ${forceOpen ? "" : "border-t border-border"}`}>
           {claims.map((c, i) => {
             const paper = paperById.get(c.paper_id);
             return (
