@@ -48,6 +48,7 @@ import uuid                                   # 生成 task_id
 from datetime import datetime, timezone
 from typing import Literal
 
+import httpx                                   # 用于捕获 /api/chat 代理的超时 / 状态码错误
 from fastapi import BackgroundTasks, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -64,7 +65,7 @@ from database import (
 )
 from extractor import extract_claims
 from contradiction import build_matrix
-from generator import generate_review
+from generator import deepseek_chat, generate_review
 from timeline import build_timeline
 
 
@@ -199,6 +200,32 @@ class ReviewResponse(BaseModel):
     task_id: str
     review: str
     cached: bool  # True 表示这次是从缓存取的
+    elapsed_ms: int = 0        # LLM 生成耗时；缓存命中时是首次生成时记录的值
+    input_tokens: int = 0      # prompt token 数
+    output_tokens: int = 0     # completion token 数
+    model: str = ""            # 实际使用的模型名
+
+
+# ===== /api/chat 通用 DeepSeek 代理 =====
+# 前端要用 response_format=json_object 让模型直接吐结构化数据时,
+# 走这个通道而不是自己写一套业务路由。不用于对外开放, 仅供本站前端调用。
+class ChatMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage] = Field(..., min_length=1, max_length=20)
+    temperature: float = Field(0.5, ge=0.0, le=2.0)
+    response_format: dict | None = None  # 如 {"type": "json_object"}
+
+
+class ChatResponse(BaseModel):
+    content: str
+    elapsed_ms: int
+    input_tokens: int
+    output_tokens: int
+    model: str
 
 
 # ===== 任务存储（进程内内存）=====
@@ -539,14 +566,23 @@ async def get_review(task_id: str):
             detail=f"任务未完成，当前状态：{task['status']}",
         )
 
-    # 缓存命中：直接返回
+    # 缓存命中：直接返回（连带把首次生成时记录的 token/耗时一起返回）
     if task.get("review"):
-        return ReviewResponse(task_id=task_id, review=task["review"], cached=True)
+        meta = task.get("review_meta") or {}
+        return ReviewResponse(
+            task_id=task_id,
+            review=task["review"],
+            cached=True,
+            elapsed_ms=int(meta.get("elapsed_ms", 0)),
+            input_tokens=int(meta.get("input_tokens", 0)),
+            output_tokens=int(meta.get("output_tokens", 0)),
+            model=str(meta.get("model", "")),
+        )
 
     # 首次生成：调 generator
     result = task["result"]
     try:
-        review_text = await generate_review(
+        gen = await generate_review(
             claims=result["claims"],
             matrix=result["matrix"],
             query=result["query"],
@@ -558,11 +594,58 @@ async def get_review(task_id: str):
             detail=f"生成综述失败: {type(e).__name__}: {e}",
         )
 
-    # 存缓存（下次就不用再调 API 了）
-    task["review"] = review_text
+    # 存缓存（文本 + 元数据）
+    task["review"] = gen["review"]
+    task["review_meta"] = {
+        "elapsed_ms": gen["elapsed_ms"],
+        "input_tokens": gen["input_tokens"],
+        "output_tokens": gen["output_tokens"],
+        "model": gen["model"],
+    }
     task["updated_at"] = _now_iso()
 
-    return ReviewResponse(task_id=task_id, review=review_text, cached=False)
+    return ReviewResponse(
+        task_id=task_id,
+        review=gen["review"],
+        cached=False,
+        elapsed_ms=gen["elapsed_ms"],
+        input_tokens=gen["input_tokens"],
+        output_tokens=gen["output_tokens"],
+        model=gen["model"],
+    )
+
+
+# ===== 接口 4.5：POST /api/chat =====
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_completion(req: ChatRequest):
+    """
+    通用 DeepSeek 代理。前端传 messages + temperature + response_format,
+    后端用已配置好的 API key 透传给 DeepSeek, 返回 content + token 统计。
+
+    注意: 这是个原始通道, 不做业务缓存、不做 prompt 模板、不做权限检查。
+          仅供本站前端"研究方向建议"这类轻量功能使用。
+    """
+    try:
+        result = await deepseek_chat(
+            messages=[m.model_dump() for m in req.messages],
+            temperature=req.temperature,
+            response_format=req.response_format,
+            timeout_s=45.0,
+        )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="DeepSeek 请求超时")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"DeepSeek {e.response.status_code}: {e.response.text[:200]}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+    return ChatResponse(
+        content=result["content"],
+        elapsed_ms=result["elapsed_ms"],
+        input_tokens=result["input_tokens"],
+        output_tokens=result["output_tokens"],
+        model=result["model"],
+    )
 
 
 # ===== 接口 5：GET /api/export/{task_id} =====
@@ -689,10 +772,65 @@ def _build_markdown_report(task_id: str, result: dict, review_text: str | None) 
     return "\n".join(lines)
 
 
+def _bibtex_escape(s: str) -> str:
+    """BibTeX 字段值里的 { } \\ 需要转义。"""
+    if not s:
+        return ""
+    return (
+        s.replace("\\", "\\textbackslash{}")
+         .replace("{", "\\{")
+         .replace("}", "\\}")
+         .replace("&", "\\&")
+         .replace("%", "\\%")
+         .replace("$", "\\$")
+         .replace("#", "\\#")
+         .replace("_", "\\_")
+    )
+
+
+def _bib_key(paper: dict, index: int) -> str:
+    """构造一个尽量稳定的 BibTeX key：firstAuthorLastName + year + index。"""
+    authors = paper.get("authors") or []
+    first = authors[0] if authors else "anon"
+    last = first.strip().split()[-1] if first else "anon"
+    last = "".join(ch for ch in last if ch.isalnum()) or "anon"
+    year = paper.get("year") or "nd"
+    return f"{last}{year}_{index}"
+
+
+def _build_bibtex(papers: list[dict]) -> str:
+    """把论文列表转成 .bib 文本。"""
+    blocks: list[str] = []
+    for idx, p in enumerate(papers, 1):
+        key = _bib_key(p, idx)
+        authors = " and ".join(p.get("authors") or [])
+        title = p.get("title") or ""
+        year = p.get("year")
+        doi = p.get("doi")
+        url = p.get("url")
+        source = p.get("source") or "misc"
+        # 大多数情况没有 journal 字段 → 用 @article/@misc 兜底
+        kind = "article" if year else "misc"
+        fields: list[str] = []
+        if title:
+            fields.append(f"  title = {{{_bibtex_escape(title)}}}")
+        if authors:
+            fields.append(f"  author = {{{_bibtex_escape(authors)}}}")
+        if year:
+            fields.append(f"  year = {{{year}}}")
+        if doi:
+            fields.append(f"  doi = {{{_bibtex_escape(doi)}}}")
+        if url:
+            fields.append(f"  url = {{{_bibtex_escape(url)}}}")
+        fields.append(f"  note = {{Source: {_bibtex_escape(source)}}}")
+        blocks.append("@" + kind + "{" + key + ",\n" + ",\n".join(fields) + "\n}")
+    return "\n\n".join(blocks) + "\n"
+
+
 @app.get("/api/export/{task_id}")
 async def export_report(task_id: str, format: str = "md"):
-    """导出分析报告。目前只支持 format=md。"""
-    if format != "md":
+    """导出分析报告。支持 format=md | bib。"""
+    if format not in ("md", "bib"):
         raise HTTPException(status_code=400, detail=f"暂不支持的导出格式：{format}")
     task = TASKS.get(task_id)
     if not task:
@@ -701,18 +839,25 @@ async def export_report(task_id: str, format: str = "md"):
         raise HTTPException(status_code=409, detail=f"任务未完成，当前状态：{task['status']}")
 
     result = task["result"]
-    md = _build_markdown_report(task_id, result, task.get("review"))
 
     query = (result.get("query") or "report").strip().replace(" ", "_")
     safe_query = "".join(ch for ch in query if ch.isalnum() or ch in "_-") or "report"
     if len(safe_query) > 40:
         safe_query = safe_query[:40]
     date_str = datetime.now().strftime("%Y%m%d")
-    filename = f"PaperTrace_报告_{safe_query}_{date_str}.md"
+
+    if format == "md":
+        body = _build_markdown_report(task_id, result, task.get("review")).encode("utf-8")
+        media = "text/markdown; charset=utf-8"
+        filename = f"PaperTrace_报告_{safe_query}_{date_str}.md"
+    else:  # bib
+        body = _build_bibtex(result.get("papers") or []).encode("utf-8")
+        media = "application/x-bibtex; charset=utf-8"
+        filename = f"PaperTrace_文献_{safe_query}_{date_str}.bib"
 
     return Response(
-        content=md.encode("utf-8"),
-        media_type="text/markdown; charset=utf-8",
+        content=body,
+        media_type=media,
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
         },

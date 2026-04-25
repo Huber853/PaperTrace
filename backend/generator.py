@@ -31,10 +31,77 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
+from typing import TypedDict
 
 import httpx
 from dotenv import load_dotenv
+
+
+class ReviewResult(TypedDict):
+    """generate_review 的返回结构。新增字段：耗时与 token 用量。"""
+    review: str
+    elapsed_ms: int
+    input_tokens: int
+    output_tokens: int
+    model: str
+
+
+class ChatResult(TypedDict):
+    """deepseek_chat 的返回结构。"""
+    content: str
+    elapsed_ms: int
+    input_tokens: int
+    output_tokens: int
+    model: str
+
+
+async def deepseek_chat(
+    messages: list[dict],
+    temperature: float = 0.5,
+    response_format: dict | None = None,
+    timeout_s: float = 45.0,
+) -> ChatResult:
+    """
+    通用 DeepSeek chat completions 封装。
+    其他模块 (generate_review、/api/chat 路由等) 都应该复用这个函数,
+    避免到处手写 httpx + headers + api_key。
+    """
+    payload: dict = {
+        "model": DEEPSEEK_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if response_format:
+        payload["response_format"] = response_format
+
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    url = f"{DEEPSEEK_BASE_URL}/chat/completions"
+
+    t0 = time.perf_counter()
+    async with httpx.AsyncClient(timeout=timeout_s) as client:
+        response = await client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+    try:
+        content: str = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"DeepSeek 返回结构异常: {data}") from e
+
+    usage = data.get("usage") or {}
+    return ChatResult(
+        content=content,
+        elapsed_ms=elapsed_ms,
+        input_tokens=int(usage.get("prompt_tokens") or 0),
+        output_tokens=int(usage.get("completion_tokens") or 0),
+        model=data.get("model") or DEEPSEEK_MODEL,
+    )
 
 
 # ===== 环境变量 =====
@@ -166,21 +233,18 @@ async def generate_review(
     matrix: list[list[dict]],
     query: str,
     papers: list[dict],
-) -> str:
+) -> ReviewResult:
     """
-    生成综述段落。
-
-    参数:
-        claims: 主张列表，每个 dict 含 subject/intervention/conclusion/direction/paper_id
-        matrix: N×N 关系矩阵
-        query:  原始研究问题
-        papers: 论文列表，每个 dict 至少含 id/title/authors/year
-
-    返回:
-        一段 200-400 字的中文综述段落字符串
+    生成综述段落。返回 ReviewResult dict。
     """
     if not claims:
-        return "暂无可综述的主张内容。"
+        return ReviewResult(
+            review="暂无可综述的主张内容。",
+            elapsed_ms=0,
+            input_tokens=0,
+            output_tokens=0,
+            model=DEEPSEEK_MODEL,
+        )
 
     user_msg = _format_context(query, papers, claims, matrix)
 
@@ -190,9 +254,7 @@ async def generate_review(
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
         ],
-        # 综述需要一点点文笔变化，温度比抽取/判定略高
         "temperature": 0.5,
-        # 综述是纯文本不是 JSON，不需要 response_format
     }
 
     headers = {
@@ -202,25 +264,36 @@ async def generate_review(
 
     url = f"{DEEPSEEK_BASE_URL}/chat/completions"
 
+    t0 = time.perf_counter()
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
     try:
         content: str = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as e:
         raise RuntimeError(f"DeepSeek 返回结构异常: {data}") from e
 
-    # 去掉模型偶尔加的前后空白和意外的 markdown 包裹
+    usage = data.get("usage") or {}
+    input_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or 0)
+    model_used = data.get("model") or DEEPSEEK_MODEL
+
     content = content.strip()
     if content.startswith("```"):
-        # 剥掉 ```xxx ... ``` 的代码块外壳
         lines = content.split("\n")
         if len(lines) >= 3:
             content = "\n".join(lines[1:-1]).strip()
 
-    return content
+    return ReviewResult(
+        review=content,
+        elapsed_ms=elapsed_ms,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        model=model_used,
+    )
 
 
 # ===== 自检入口 =====
@@ -287,7 +360,7 @@ if __name__ == "__main__":
     ]
 
     print(">>> 调用 generate_review ...\n")
-    review = asyncio.run(
+    result = asyncio.run(
         generate_review(
             claims=demo_claims,
             matrix=demo_matrix,
@@ -296,6 +369,9 @@ if __name__ == "__main__":
         )
     )
     print("=" * 50)
-    print(review)
+    print(result["review"])
     print("=" * 50)
-    print(f"\n字数（含标点）：{len(review)}")
+    print(f"\n字数（含标点）：{len(result['review'])}")
+    print(f"耗时：{result['elapsed_ms']} ms")
+    print(f"tokens：in={result['input_tokens']}  out={result['output_tokens']}")
+    print(f"模型：{result['model']}")

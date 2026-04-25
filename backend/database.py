@@ -186,6 +186,54 @@ class Claim(Base):
         return f"<Claim id={self.id} subject={self.subject!r} direction={self.direction}>"
 
 
+# ===== 表 3.5：relation_cache（claim-pair 判定结果的持久化缓存）=====
+# ---------------------------------------------------------------
+# 为什么要单独再开一张表？
+#   contradictions 表是"本次任务的"矩阵结果，按 claim_id 关联。
+#   但 claim_id 是每次任务新生成的，跨任务重复出现的 claim 拿不到旧 id。
+#   relation_cache 用 claim 的"内容指纹"做 key，跨任务、跨 query 通用。
+#
+# 字段设计:
+#   - pair_hash: sha256(sig_lo || '\0' || sig_hi || '\0' || model)，定长 64 字符做主键
+#   - sig_lo / sig_hi: 排好序的 claim 内容指纹（subject|intervention|conclusion|direction），
+#                     方便 dump 看脏数据，也方便日后做更细粒度的分析
+#   - model: 记录是哪个模型判的，换模型时能整批失效旧数据
+#
+# 命中场景:
+#   - 同一 query 反复点"分析"
+#   - 不同 query 但有重叠论文 → 同一 claim 出现 → 同一 pair 命中
+#   - 用户 refresh=True：跳过读，但仍写入（用最新结果覆盖）
+class RelationCache(Base):
+    """两条 claim 之间的判定结果缓存（按内容指纹去重）。"""
+
+    __tablename__ = "relation_cache"
+
+    # 64 字符的 sha256 作为主键，避免长字符串作 PK 带来的索引膨胀
+    pair_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    # 排好序的两条 claim 指纹（lo ≤ hi 字母序），便于 dump 排查
+    sig_lo: Mapped[str] = mapped_column(Text)
+    sig_hi: Mapped[str] = mapped_column(Text)
+
+    # 哪个模型判的：换模型时可以整批失效
+    model: Mapped[str] = mapped_column(String(100), index=True)
+
+    relation: Mapped[str] = mapped_column(String(20))
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    reason: Mapped[str] = mapped_column(Text, default="")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<RelationCache {self.pair_hash[:8]} {self.relation} "
+            f"conf={self.confidence:.2f} model={self.model}>"
+        )
+
+
 # ===== 表 3：contradictions（主张之间的关系矩阵）=====
 class Contradiction(Base):
     """两条 claim 之间的关系：support / contradict / unrelated。"""
