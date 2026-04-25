@@ -24,8 +24,6 @@ const SUGGESTED_QUERIES = [
   "low-carb vs low-fat diet",
 ] as const;
 
-const DEMO_QUERY = SUGGESTED_QUERIES[0];
-
 export default function HomePage() {
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(20);
@@ -135,7 +133,7 @@ export default function HomePage() {
             <span className="text-brand">分歧</span>
           </h1>
 
-          {/* 副标题: 衬线 + 关键词高亮 */}
+          {/* 副标题: 衬线 + 关键词高�� */}
           <p className="mx-auto mt-5 max-w-xl font-serif text-15 leading-relaxed text-text-secondary md:text-[16px] md:leading-[28px]">
             输入一个研究问题, 自动检索论文、抽取
             <span className="text-text-primary">核心主张</span>、识别彼此之间的
@@ -252,13 +250,13 @@ export default function HomePage() {
               </div>
             </div>
 
-            {/* 主按钮 + 演示 */}
-            <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+            {/* 主按钮 */}
+            <div className="mt-7">
               <button
                 type="button"
                 onClick={() => submit()}
                 disabled={submitting}
-                className="group relative flex-1 overflow-hidden rounded border border-brand/60 bg-brand/10 px-5 py-3 text-15 font-medium text-brand transition-all hover:bg-brand/20 hover:shadow-[...]
+                className="group relative w-full overflow-hidden rounded border border-brand/60 bg-brand/10 px-5 py-3 text-15 font-medium text-brand transition-all hover:bg-brand/20 hover:shadow-[...]
               >
                 {submitting ? (
                   <span className="flex items-center justify-center gap-2">
@@ -271,17 +269,6 @@ export default function HomePage() {
                     开始分析
                   </span>
                 )}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setQuery(DEMO_QUERY);
-                  submit(DEMO_QUERY);
-                }}
-                disabled={submitting}
-                className="rounded border border-border px-5 py-3 text-13 text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary disabled:opacity-60"
-              >
-                一键演示
               </button>
             </div>
 
@@ -392,7 +379,7 @@ export default function HomePage() {
               icon="◇"
               iconColor="#FFB547"
               title="N×N 关系矩阵"
-              desc="两级缓存 + 批量 LLM + 词汇过滤 + 异步并发, 60 claims 仅 ~120 次调���"
+              desc="两级缓存 + 批量 LLM + 词汇过滤 + 异步并发, 60 claims 仅 ~120 次调用"
             />
             <FeatureCard
               icon="✦"
