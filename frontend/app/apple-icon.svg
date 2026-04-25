@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
+  <!-- iOS 要求圆角由系统做, 我们用深色背景满格即可 -->
+  <rect width="180" height="180" fill="#0B0D1A"/>
+  <!-- 两个错位方块, 留白更宽松 -->
+  <rect x="36" y="48" width="72" height="72" rx="14" fill="#4ADE80"/>
+  <rect x="72" y="84" width="72" height="72" rx="14" fill="#FFB547"/>
+  <!-- 紫色重叠, 呼应争论 -->
+  <rect x="72" y="84" width="36" height="36" fill="#B4AEFF" opacity="0.35"/>
+</svg>

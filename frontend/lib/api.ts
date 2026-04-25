@@ -103,6 +103,14 @@ export interface ReviewResponse {
   task_id: string;
   review: string;
   cached: boolean;
+  /** LLM 生成耗时 (毫秒) · 缓存命中时是首次生成时记录的值 */
+  elapsed_ms: number;
+  /** prompt token 数 */
+  input_tokens: number;
+  /** completion token 数 */
+  output_tokens: number;
+  /** 实际使用的模型名 */
+  model: string;
 }
 
 // ============== 统一 axios 实例 ==============
@@ -181,13 +189,80 @@ export async function getReview(taskId: string): Promise<ReviewResponse> {
   return data;
 }
 
-export async function exportReport(taskId: string, format: "md" = "md"): Promise<{ blob: Blob; filename: string }> {
+// ============== /api/chat 通用 DeepSeek 代理 ==============
+
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface ChatOptions {
+  /** 默认 0.5, 取值 0-2 */
+  temperature?: number;
+  /** { type: "json_object" } 强制 DeepSeek 返回合法 JSON */
+  response_format?: { type: "json_object" };
+  /** 请求超时 (毫秒), 默认 30_000 */
+  timeoutMs?: number;
+  /** 调用方传入的 AbortSignal, 用来配合页面卸载时中止 */
+  signal?: AbortSignal;
+}
+
+export interface ChatResponseBody {
+  content: string;
+  elapsed_ms: number;
+  input_tokens: number;
+  output_tokens: number;
+  model: string;
+}
+
+/**
+ * 通用 DeepSeek 代理调用。
+ * 后端 POST /api/chat 透传给 DeepSeek,API key 只留在服务器端。
+ */
+export async function chatCompletion(
+  messages: ChatMessage[],
+  options: ChatOptions = {}
+): Promise<ChatResponseBody> {
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  // 把外部 signal 也桥接进来
+  if (options.signal) {
+    if (options.signal.aborted) controller.abort();
+    else options.signal.addEventListener("abort", () => controller.abort());
+  }
+
+  try {
+    const { data } = await http.post<ChatResponseBody>(
+      "/api/chat",
+      {
+        messages,
+        temperature: options.temperature ?? 0.5,
+        response_format: options.response_format,
+      },
+      { signal: controller.signal, timeout: timeoutMs }
+    );
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 支持的导出格式 */
+export type ExportFormat = "md" | "bib";
+
+export async function exportReport(
+  taskId: string,
+  format: ExportFormat = "md"
+): Promise<{ blob: Blob; filename: string }> {
   const resp = await http.get(`/api/export/${taskId}`, {
     params: { format },
     responseType: "blob",
   });
   const cd: string = resp.headers["content-disposition"] || "";
-  let filename = `PaperTrace_报告_${taskId}.md`;
+  const fallbackExt = format === "bib" ? "bib" : "md";
+  let filename = `PaperTrace_${taskId}.${fallbackExt}`;
   const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
   if (m) {
     try { filename = decodeURIComponent(m[1]); } catch {}

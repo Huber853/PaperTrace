@@ -1,50 +1,48 @@
 /**
- * PaperTrace 首页
- * ====================
- * 一个搜索框 + 一个按钮。用户输入研究问题 → 调后端 → 跳转到结果页。
- *
- * 视觉亮点:
- *   1. 背景:紫色网格 + 大光晕,营造科技感
- *   2. "✨ 一键演示"按钮:一键填入示例 query 并自动提交
- *   3. 玻璃拟态卡片 + 微交互(hover 抬起 / 阴影 / 边框发光)
- *
- * App Router 与 Pages Router 的区别(新手必读):
- *   App Router(Next.js 13+ 推荐,本项目用的)
- *     app/page.tsx → 路由 /
- *     - 默认是 React Server Component(在服务器端渲染)
- *     - 想用 useState/useEffect/onClick 等"客户端"功能时,文件顶部加 "use client"
- *
- * 这个文件需要 onClick + useState + useRouter,所以是 client component。
+ * PaperTrace 首页 (v3 · luxurious)
+ * ==================================
+ * 重构要点:
+ *   1) Hero 标题用三色立场词 (争论琥珀 / 共识翡翠 / 分歧紫) 体现项目核心
+ *   2) 副标题使用 Noto Serif SC, 衬线学术风
+ *   3) 关键流程 chip 用 color-coded dot, 不再单色文本
+ *   4) 输入卡加 hairline corner + 聚焦时的 brand 渐变光环
+ *   5) "工作原理" 四步每步独立 accent 色
+ *   6) 新增完整 #about 章节, 修复死链
+ *   7) 顶部装饰横线网格 + 双径向光晕保留
  */
-
-"use client"; // ← 关键!声明这是客户端组件,能用 hooks 和事件
+"use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation"; // App Router 的 router
+import { useRouter } from "next/navigation";
 import { startAnalysis } from "@/lib/api";
-// 一键演示的示例 query
-const DEMO_QUERY = "intermittent fasting health effects";
+
+// —— 可快速编辑的常量 —— //
+const SUGGESTED_QUERIES = [
+  "intermittent fasting health effects",
+  "remote work productivity",
+  "sleep deprivation cognition",
+  "low-carb vs low-fat diet",
+] as const;
+
+const DEMO_QUERY = SUGGESTED_QUERIES[0];
+
+// 大致估算: 每篇论文 ≈ 2 条主张, 矩阵规模 ≈ N^2/2 次判定, 每次 ≈ 500 tokens
+function estimate(limit: number) {
+  const secs = Math.round(limit * 1.2 + (limit * limit) / 10);
+  const tokensK = Math.round((limit * 2 + (limit * limit) / 2) * 0.5);
+  return { secs, tokensK };
+}
 
 export default function HomePage() {
-  // 用户输入的研究问题
   const [query, setQuery] = useState("");
-  // 拉多少篇论文,默认 20
   const [limit, setLimit] = useState(20);
-  // 提交中状态:禁用按钮 + 显示 loading
   const [submitting, setSubmitting] = useState(false);
-  // 错误信息(提交失败时显示)
   const [error, setError] = useState<string | null>(null);
-
+  const [focused, setFocused] = useState(false);
   const router = useRouter();
 
-  /**
-   * 抽出来的"提交"逻辑:
-   * 接受一个可选的 overrideQuery 参数,这样既能给输入框的按钮用,
-   * 也能给"一键演示"按钮用 —— 演示按钮会传入示例 query。
-   * 为什么不复用 setQuery + handleSubmit?
-   *   因为 setQuery 是异步的,setQuery(DEMO_QUERY) 后立刻调 handleSubmit
-   *   读到的还是旧的 query。直接传参更安全。
-   */
+  const { secs, tokensK } = estimate(limit);
+
   const submit = async (overrideQuery?: string) => {
     const finalQuery = (overrideQuery ?? query).trim();
     if (!finalQuery) {
@@ -61,165 +59,523 @@ export default function HomePage() {
       setError(message);
       setSubmitting(false);
     }
-    // 成功路径不重置 submitting,因为页面马上要跳走了
-  };
-
-  /** 一键演示:把输入框填上示例,顺便触发提交 */
-  const handleDemo = () => {
-    setQuery(DEMO_QUERY);
-    submit(DEMO_QUERY);
-  };
-
-  /** 回车也能提交 */
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !submitting) submit();
   };
 
   return (
-    // relative + overflow-hidden 让背景层不会溢出滚动条
-    <main className="relative min-h-screen overflow-hidden bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white">
-      {/* ===== 背景层 1:淡紫色网格 =====
-          做法:用线性渐变画一根细线,然后通过 background-size 重复成网格。
-          rgba(139,92,246,0.1) 是 tailwind 的 violet-500 透明 10%,够淡又能看见。
-          absolute -z-10 让它躺在所有内容下面。 */}
+    <div
+      className="relative flex min-h-screen flex-col text-text-primary"
+      style={{
+        background: `
+          radial-gradient(ellipse at 18% 14%, rgba(139,127,255,0.10) 0%, transparent 55%),
+          radial-gradient(ellipse at 82% 86%, rgba(255,181,71,0.06) 0%, transparent 55%),
+          radial-gradient(ellipse at 50% 0%, rgba(74,222,128,0.04) 0%, transparent 40%),
+          #111428
+        `,
+      }}
+    >
+      {/* 顶部装饰: 极淡的横线网格, 仅在 Hero 上方 */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 -z-10"
+        className="pointer-events-none absolute inset-x-0 top-0 h-[420px] opacity-[0.35]"
         style={{
-          backgroundImage:
-            "linear-gradient(rgba(139,92,246,0.1) 1px, transparent 1px), linear-gradient(to right, rgba(139,92,246,0.1) 1px, transparent 1px)",
-          backgroundSize: "40px 40px",
-        }}
-      />
-
-      {/* ===== 背景层 2:600px 紫色径向光晕 =====
-          radial-gradient 画一个柔和的圆,中心紫色,边缘透明,
-          模拟"屏幕中央漂浮一团光"的效果。
-          left/top -200px 让光晕中心偏出屏幕,只露半边,更有层次。 */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -z-10"
-        style={{
-          left: "50%",
-          top: "20%",
-          width: "600px",
-          height: "600px",
-          transform: "translate(-50%, 0)",
           background:
-            "radial-gradient(circle, rgba(139,92,246,0.25) 0%, rgba(139,92,246,0.05) 40%, transparent 70%)",
-          filter: "blur(20px)",
+            "repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(255,255,255,0.025) 39px, rgba(255,255,255,0.025) 40px)",
+          maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+          WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
         }}
       />
 
-      {/* 中央卡片容器 */}
-      <div className="container relative mx-auto flex min-h-screen max-w-3xl flex-col items-center justify-center px-4 py-16">
-        {/* 标题区 */}
-        <div className="mb-10 text-center">
-          <h1 className="bg-gradient-to-r from-indigo-300 via-purple-300 to-pink-300 bg-clip-text text-5xl font-bold tracking-tight text-transparent md:text-6xl">
-            PaperTrace
+      {/* ===== 顶部导航 ===== */}
+      <nav className="relative z-10 border-b border-border/70">
+        <div className="mx-auto flex max-w-[1200px] items-center justify-between px-6 py-4">
+          <div className="flex items-center gap-2.5">
+            <LogoMark />
+            <span className="text-15 font-medium tracking-wide">
+              <span className="text-text-primary">Paper</span>
+              <span className="text-brand">Trace</span>
+            </span>
+            <span
+              className="ml-2 rounded-sm border border-brand/30 bg-brand/5 px-1.5 py-[1px] text-10 font-medium uppercase tracking-label text-brand"
+            >
+              v0.1
+            </span>
+          </div>
+          <div className="hidden items-center gap-6 text-13 text-text-secondary md:flex">
+            <a href="#how" className="transition-colors hover:text-text-primary">
+              工作原理
+            </a>
+            <a href="#about" className="transition-colors hover:text-text-primary">
+              关于
+            </a>
+            <a
+              href="https://github.com"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 transition-colors hover:text-text-primary"
+            >
+              GitHub
+              <span className="text-10 text-text-muted">↗</span>
+            </a>
+          </div>
+        </div>
+      </nav>
+
+      {/* ===== 主内容 (整体居中) ===== */}
+      <main className="relative z-10 mx-auto flex w-full max-w-[760px] flex-1 flex-col items-center px-6 py-12 md:py-20">
+        {/* Hero · 居中 */}
+        <section className="w-full text-center">
+          {/* 顶部小标签 */}
+          <div className="inline-flex items-center gap-2 rounded-full border border-border/80 bg-bg-surface/40 px-3 py-1 text-11 backdrop-blur-sm">
+            <span className="h-[6px] w-[6px] rounded-full bg-accent-support shadow-[0_0_8px_rgba(74,222,128,0.6)]" />
+            <span className="text-text-secondary">research tool</span>
+            <span className="text-text-muted">·</span>
+            <span className="num text-text-primary">v0.1</span>
+          </div>
+
+          {/* 主标题: 三色立场词 */}
+          <h1 className="mt-6 text-28 font-medium tracking-tight md:text-36">
+            发现学术论文之间
+            <br />
+            真正的
+            <span className="text-accent-conflict">争论</span>
+            <span className="text-text-muted">、</span>
+            <span className="text-accent-support">共识</span>
+            <span className="text-text-muted"> 与</span>
+            <span className="text-brand">分歧</span>
           </h1>
 
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-            {["📊 多源数据融合", "🔍 观点矛盾识别", "📈 可视化分析", "✍️ 自动综述生成"].map((tag) => (
-              <span key={tag} className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-400">
-                {tag}
-              </span>
-            ))}
+          {/* 副标题: 衬线 + 关键词高亮 */}
+          <p className="mx-auto mt-5 max-w-xl font-serif text-15 leading-relaxed text-text-secondary md:text-[16px] md:leading-[28px]">
+            输入一个研究问题, 自动检索论文、抽取
+            <span className="text-text-primary">核心主张</span>、识别彼此之间的
+            <span className="text-accent-conflict">矛盾</span>与
+            <span className="text-accent-support">共识</span>,
+            并生成可追溯引用的
+            <span className="text-brand">综述段落</span>。
+          </p>
+
+          {/* 一行流程指示 */}
+          <div className="mt-7 flex flex-wrap items-center justify-center gap-x-1 gap-y-2 text-11 text-text-muted">
+            <FlowChip color="#B4AEFF" label="检索" />
+            <Arrow />
+            <FlowChip color="#7DD3FC" label="抽取" />
+            <Arrow />
+            <FlowChip color="#FFB547" label="判定" />
+            <Arrow />
+            <FlowChip color="#4ADE80" label="综述" />
           </div>
-        </div>
+        </section>
 
-        {/* 搜索卡片 —— 玻璃拟态:backdrop-blur-xl + 半透明白底 + 半透明白边框 */}
-        <div className="w-full rounded-2xl border border-white/10 bg-white/5 p-6 shadow-2xl backdrop-blur-xl transition-all duration-200 hover:border-purple-400/30 hover:shadow-purple-500/10 md:p-8">
-          {/* 搜索输入 */}
-          <label
-            htmlFor="query"
-            className="mb-2 block text-sm font-medium text-slate-200"
-          >
-            研究问题(建议英文,论文库以英文为主)
-          </label>
-          <input
-            id="query"
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="例如:remote work productivity, sleep deprivation cognition ..."
-            className="w-full rounded-xl border border-white/10 bg-slate-900/60 px-4 py-3 text-base text-white placeholder:text-slate-500 transition-all focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
-            disabled={submitting}
-          />
+        {/* 输入卡 */}
+        <section
+          className="relative mt-12 w-full overflow-hidden rounded-lg border bg-bg-surface transition-colors"
+          style={{
+            borderColor: focused ? "rgba(180,174,255,0.45)" : "rgba(36,40,69,1)",
+            boxShadow: focused
+              ? "0 0 0 1px rgba(180,174,255,0.2), 0 0 40px -10px rgba(180,174,255,0.25)"
+              : "none",
+          }}
+        >
+          {/* 装饰角标: 四个 hairline 角 */}
+          <CornerBracket pos="tl" />
+          <CornerBracket pos="tr" />
+          <CornerBracket pos="bl" />
+          <CornerBracket pos="br" />
 
-          {/* 数量滑块 */}
-          <div className="mt-5">
-            <label
-              htmlFor="limit"
-              className="mb-2 flex items-center justify-between text-sm font-medium text-slate-200"
-            >
-              <span>论文数量</span>
-              <span className="rounded-full bg-indigo-500/20 px-3 py-0.5 text-indigo-200">
-                {limit} 篇
-              </span>
+          <div className="border-b border-border px-6 py-4 text-left">
+            <div className="flex items-center gap-2">
+              <span className="h-[6px] w-[6px] rounded-sm bg-brand" />
+              <div className="eyebrow text-brand">start</div>
+            </div>
+            <h2 className="mt-2 text-17 font-medium">研究问题</h2>
+          </div>
+
+          <div className="px-6 py-6 text-left">
+            {/* 输入框 */}
+            <label htmlFor="query" className="block text-12 text-text-secondary">
+              建议使用<span className="text-text-primary">英文</span>, 论文库以英文文献为主
             </label>
             <input
-              id="limit"
-              type="range"
-              min={3}
-              max={30}
-              step={1}
-              value={limit}
-              onChange={(e) => setLimit(Number(e.target.value))}
+              id="query"
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !submitting) submit();
+              }}
+              placeholder="e.g. intermittent fasting health effects"
+              className="mt-2 w-full rounded border border-border bg-bg-elevated px-4 py-3 text-15 text-text-primary placeholder:text-text-muted focus:border-brand focus:outline-none"
               disabled={submitting}
-              className="w-full accent-indigo-400"
             />
-            <div className="mt-1 flex justify-between text-xs text-slate-500">
-              <span>3</span>
-              <span>越多越慢,建议 5-15</span>
-              <span>30</span>
-            </div>
-          </div>
 
-          {/* 主提交按钮 + 一键演示按钮(并排) */}
-          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-            <button
-              type="button"
-              onClick={() => submit()}
-              disabled={submitting}
-              className="flex-1 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 px-6 py-3 text-lg font-semibold text-white shadow-lg shadow-indigo-500/30 transition-all duration-200 hover:-translate-y-0.5 hover:from-indigo-400 hover:to-purple-400 hover:shadow-xl hover:shadow-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
-            >
-              {submitting ? (
-                <span className="flex items-center justify-center gap-2">
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                  正在提交 ...
+            {/* 建议词: 每个前面一个色点 */}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {SUGGESTED_QUERIES.map((q, idx) => {
+                const dotColors = ["#B4AEFF", "#FFB547", "#4ADE80", "#7DD3FC"];
+                return (
+                  <button
+                    key={q}
+                    type="button"
+                    onClick={() => setQuery(q)}
+                    disabled={submitting}
+                    className="group inline-flex items-center gap-1.5 rounded-sm border border-border bg-bg-elevated/40 px-2.5 py-1 text-12 text-text-secondary transition-colors hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary disabled:opacity-60"
+                  >
+                    <span
+                      aria-hidden
+                      className="h-[5px] w-[5px] rounded-full"
+                      style={{ background: dotColors[idx % dotColors.length] }}
+                    />
+                    {q}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* 论文数量 */}
+            <div className="mt-7">
+              <div className="flex items-baseline justify-between">
+                <label htmlFor="limit" className="text-13 text-text-secondary">
+                  论文数量
+                </label>
+                <span className="num text-12 text-text-muted">
+                  <span className="text-text-primary">{limit}</span> 篇
+                  <span className="text-text-muted"> · </span>
+                  <span className="text-accent-support">~{secs}s</span>
+                  <span className="text-text-muted"> · </span>
+                  <span className="text-brand">~{tokensK}k</span>
+                  <span className="text-text-muted"> tokens</span>
                 </span>
-              ) : (
-                "开始分析"
-              )}
-            </button>
+              </div>
+              <input
+                id="limit"
+                type="range"
+                min={3}
+                max={30}
+                step={1}
+                value={limit}
+                onChange={(e) => setLimit(Number(e.target.value))}
+                disabled={submitting}
+                className="mt-3 w-full accent-brand"
+              />
+              <div className="mt-1 flex justify-between text-10 text-text-muted">
+                <span>3</span>
+                <span className="text-text-secondary">推荐 10 - 20</span>
+                <span>30</span>
+              </div>
+            </div>
 
-            {/* ✨ 一键演示:不抢主按钮的视觉,但也用紫色调,
-                hover 时同样的微交互,保持一致的"质感语言" */}
-            <button
-              type="button"
-              onClick={handleDemo}
-              disabled={submitting}
-              className="rounded-xl border border-purple-400/40 bg-purple-500/10 px-5 py-3 text-base font-medium text-purple-200 transition-all duration-200 hover:-translate-y-0.5 hover:border-purple-300/60 hover:bg-purple-500/20 hover:shadow-lg hover:shadow-purple-500/20 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
-            >
-              ✨ 一键演示
-            </button>
+            {/* 主按钮 + 演示 */}
+            <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+              <button
+                type="button"
+                onClick={() => submit()}
+                disabled={submitting}
+                className="group relative flex-1 overflow-hidden rounded border border-brand/60 bg-brand/10 px-5 py-3 text-15 font-medium text-brand transition-all hover:bg-brand/20 hover:shadow-[0_0_24px_-6px_rgba(180,174,255,0.5)] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {submitting ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="h-[10px] w-[10px] animate-pulse rounded-sm bg-brand" />
+                    正在提交任务 ...
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <span aria-hidden className="text-brand/70">✦</span>
+                    开始分析
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery(DEMO_QUERY);
+                  submit(DEMO_QUERY);
+                }}
+                disabled={submitting}
+                className="rounded border border-border px-5 py-3 text-13 text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary disabled:opacity-60"
+              >
+                一键演示
+              </button>
+            </div>
+
+            {error && (
+              <div className="mt-4 rounded border border-accent-conflict/40 bg-accent-conflict/10 px-3 py-2 text-13 text-accent-conflict">
+                {error}
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* "工作原理" · 四步每步独立色 */}
+        <section id="how" className="mt-24 w-full text-center scroll-mt-24">
+          <div className="eyebrow text-brand/80">how it works</div>
+          <h3 className="mt-2 text-20 font-medium">
+            从一个<span className="text-brand">问题</span>到一篇<span className="text-accent-support">综述</span>
+            <span className="text-text-muted"> · </span>
+            四步流水线
+          </h3>
+          <ol className="mt-8 grid gap-4 md:grid-cols-4">
+            {[
+              {
+                no: "01",
+                title: "检索",
+                desc: "OpenAlex + arXiv 合并去重",
+                color: "#B4AEFF",
+                en: "RETRIEVE",
+              },
+              {
+                no: "02",
+                title: "抽取",
+                desc: "DeepSeek 结构化每条核心主张",
+                color: "#7DD3FC",
+                en: "EXTRACT",
+              },
+              {
+                no: "03",
+                title: "判定",
+                desc: "两两对比: 支持 / 矛盾 / 无关",
+                color: "#FFB547",
+                en: "CLASSIFY",
+              },
+              {
+                no: "04",
+                title: "综述",
+                desc: "反向生成带引用的学术段落",
+                color: "#4ADE80",
+                en: "REVIEW",
+              },
+            ].map((step) => (
+              <li
+                key={step.no}
+                className="group relative overflow-hidden rounded-lg border border-border bg-bg-surface/60 p-4 text-left transition-all hover:border-border-strong hover:bg-bg-surface"
+              >
+                {/* 顶部 2px 色条 */}
+                <span
+                  aria-hidden
+                  className="absolute left-0 top-0 h-[2px] w-full"
+                  style={{ background: step.color }}
+                />
+                <div className="flex items-baseline justify-between">
+                  <span className="num text-24 font-medium" style={{ color: step.color }}>
+                    {step.no}
+                  </span>
+                  <span
+                    className="text-10 uppercase tracking-label"
+                    style={{ color: step.color, opacity: 0.7 }}
+                  >
+                    {step.en}
+                  </span>
+                </div>
+                <div className="mt-3 text-15 text-text-primary">{step.title}</div>
+                <div className="mt-1 text-12 text-text-secondary">{step.desc}</div>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        {/* "关于" · 修复死链 */}
+        <section id="about" className="mt-24 w-full scroll-mt-24">
+          <div className="text-center">
+            <div className="eyebrow text-brand/80">about</div>
+            <h3 className="mt-2 text-20 font-medium">
+              关于 <span className="text-brand">PaperTrace</span>
+            </h3>
           </div>
 
-          {/* 错误提示 */}
-          {error && (
-            <div className="mt-4 rounded-lg border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-              ⚠ {error}
-            </div>
-          )}
-        </div>
+          {/* 项目简介 (衬线) */}
+          <p className="mx-auto mt-6 max-w-2xl text-center font-serif text-15 leading-[28px] text-text-secondary">
+            PaperTrace 把"读完十几篇英文论文才能写出一段综述"这件事自动化:
+            <br />
+            它先用 <span className="text-text-primary">LLM 把每篇论文压成结构化主张</span>,
+            再两两判定关系,
+            <br />
+            最后把整张<span className="text-accent-conflict">争论网络</span>展示给你 ——
+            <span className="text-brand"> 5 分钟内</span>看清一个领域的共识与分歧。
+          </p>
 
-        {/* 底部小字 */}
-        <p className="mt-8 text-center text-xs text-slate-500">
-          数据源:OpenAlex + arXiv · 推理:DeepSeek
-        </p>
+          {/* 三栏特性 */}
+          <div className="mt-10 grid gap-4 md:grid-cols-3">
+            <FeatureCard
+              icon="◆"
+              iconColor="#B4AEFF"
+              title="结构化抽取"
+              desc="主张拆成 subject / intervention / conclusion / direction 四元组, Pydantic 严格校验, 失败自动重试"
+            />
+            <FeatureCard
+              icon="◇"
+              iconColor="#FFB547"
+              title="N×N 关系矩阵"
+              desc="两级缓存 + 批量 LLM + 词汇过滤 + 异步并发, 60 claims 仅 ~120 次调用"
+            />
+            <FeatureCard
+              icon="✦"
+              iconColor="#4ADE80"
+              title="可追溯综述"
+              desc="生成 200-400 字段落, 每处引用带 [N] 标号, 可一键导出 Markdown / BibTeX"
+            />
+          </div>
+
+          {/* 技术栈徽章 */}
+          <div className="mt-10 rounded-lg border border-border bg-bg-surface/60 px-6 py-5">
+            <div className="eyebrow text-text-muted">tech stack</div>
+            <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-3 text-12">
+              <TechItem color="#4ADE80" name="FastAPI" tag="Backend" />
+              <TechItem color="#B4AEFF" name="Next.js 14" tag="Frontend" />
+              <TechItem color="#7DD3FC" name="DeepSeek" tag="LLM" />
+              <TechItem color="#FFB547" name="OpenAlex" tag="Data" />
+              <TechItem color="#FFB547" name="arXiv" tag="Data" />
+              <TechItem color="#A5A9C4" name="SQLAlchemy 2.0" tag="ORM" />
+              <TechItem color="#A5A9C4" name="ECharts" tag="Viz" />
+              <TechItem color="#A5A9C4" name="Tailwind" tag="Style" />
+            </div>
+          </div>
+
+          {/* 三个数字, 强调"已工程化" */}
+          <div className="mt-10 grid grid-cols-3 gap-4 text-center">
+            <BigStat label="数据源" value="2" suffix="个" colored="#FFB547" />
+            <BigStat label="LLM 调用优化层" value="5" suffix="层" colored="#B4AEFF" />
+            <BigStat label="缓存层级" value="L1+L2" colored="#4ADE80" />
+          </div>
+        </section>
+      </main>
+
+      {/* ===== 底部 ===== */}
+      <footer className="relative z-10 border-t border-border">
+        <div className="mx-auto flex max-w-[1200px] flex-wrap items-center justify-between gap-2 px-6 py-4 text-11 text-text-muted">
+          <span>
+            数据源: <span className="text-text-secondary">OpenAlex</span>
+            <span className="mx-1.5">+</span>
+            <span className="text-text-secondary">arXiv</span>
+            <span className="mx-1.5">·</span>
+            推理: <span className="text-brand">DeepSeek</span>
+          </span>
+          <span className="num">PaperTrace · v0.1</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+/* ============== 小组件 ============== */
+
+function LogoMark() {
+  // 极简 Logo: 两个错位的小方块 + 微小 brand 圆点
+  return (
+    <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden>
+      <rect x="1" y="3" width="10" height="10" rx="2.5" fill="#4ADE80" opacity="0.92" />
+      <rect x="9" y="9" width="10" height="10" rx="2.5" fill="#FFB547" opacity="0.92" />
+      <circle cx="11" cy="11" r="1.5" fill="#B4AEFF" />
+    </svg>
+  );
+}
+
+function FlowChip({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span
+        aria-hidden
+        className="h-[6px] w-[6px] rounded-full"
+        style={{ background: color }}
+      />
+      <span className="text-text-secondary">{label}</span>
+    </span>
+  );
+}
+
+function Arrow() {
+  return <span className="px-1 text-text-muted">→</span>;
+}
+
+function CornerBracket({ pos }: { pos: "tl" | "tr" | "bl" | "br" }) {
+  const cls = {
+    tl: "left-0 top-0 border-l border-t",
+    tr: "right-0 top-0 border-r border-t",
+    bl: "left-0 bottom-0 border-l border-b",
+    br: "right-0 bottom-0 border-r border-b",
+  }[pos];
+  return (
+    <span
+      aria-hidden
+      className={`pointer-events-none absolute h-3 w-3 ${cls}`}
+      style={{ borderColor: "rgba(180,174,255,0.4)" }}
+    />
+  );
+}
+
+function FeatureCard({
+  icon,
+  iconColor,
+  title,
+  desc,
+}: {
+  icon: string;
+  iconColor: string;
+  title: string;
+  desc: string;
+}) {
+  return (
+    <article className="rounded-lg border border-border bg-bg-surface/60 p-5 transition-colors hover:border-border-strong">
+      <div className="flex items-center gap-2">
+        <span
+          className="flex h-[26px] w-[26px] items-center justify-center rounded-sm text-14"
+          style={{
+            background: `${iconColor}1A`,
+            color: iconColor,
+          }}
+          aria-hidden
+        >
+          {icon}
+        </span>
+        <h4 className="text-14 font-medium text-text-primary">{title}</h4>
       </div>
-    </main>
+      <p className="mt-3 text-12 leading-[20px] text-text-secondary">{desc}</p>
+    </article>
+  );
+}
+
+function TechItem({
+  color,
+  name,
+  tag,
+}: {
+  color: string;
+  name: string;
+  tag: string;
+}) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span
+        aria-hidden
+        className="h-[6px] w-[6px] rounded-full"
+        style={{ background: color }}
+      />
+      <span className="text-text-primary">{name}</span>
+      <span className="text-10 uppercase tracking-label text-text-muted">{tag}</span>
+    </span>
+  );
+}
+
+function BigStat({
+  label,
+  value,
+  suffix,
+  colored,
+}: {
+  label: string;
+  value: string;
+  suffix?: string;
+  colored: string;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-bg-surface/40 px-4 py-5">
+      <div className="eyebrow text-text-muted">{label}</div>
+      <div className="mt-2 flex items-baseline justify-center gap-1">
+        <span className="num text-28 font-medium" style={{ color: colored }}>
+          {value}
+        </span>
+        {suffix && <span className="text-12 text-text-muted">{suffix}</span>}
+      </div>
+    </div>
   );
 }

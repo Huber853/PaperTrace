@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!--
+    PaperTrace favicon
+    -------------------
+    与首页 Logo 视觉一致: 深色圆角底 + 两个错位方块
+    · 翡翠 (#4ADE80) 方块 = 一方论文 (支持)
+    · 琥珀 (#FFB547) 方块 = 另一方论文 (矛盾)
+    两块错位叠加, 呼应"论文之间真正的争论"
+  -->
+  <rect width="32" height="32" rx="6" fill="#0B0D1A"/>
+  <rect x="5" y="7"  width="15" height="15" rx="3" fill="#4ADE80"/>
+  <rect x="12" y="14" width="15" height="15" rx="3" fill="#FFB547"/>
+  <!-- 重叠部分高亮一抹品牌紫, 表达"争论交叠" -->
+  <rect x="12" y="14" width="8"  height="8"  fill="#B4AEFF" opacity="0.35"/>
+</svg>

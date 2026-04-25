@@ -1,22 +1,17 @@
 /**
- * PaperTrace 结果页
- * ====================
- * URL：/result/{taskId}
+ * PaperTrace 结果页 (v2)
+ * ==========================
+ * 顶部栏: [← 返回] [状态胶囊] [研究问题] [元信息] [导出 ▾] [刷新]
  *
- * 工作流程：
- *   1. 进入页面 → 立刻开始轮询 /api/task/{taskId}（每 2 秒一次）
- *   2. 看到 status === "done" → 调 /api/result/{taskId} 拿完整结果 → 停止轮询
- *   3. 看到 status === "failed" → 显示错误 → 停止轮询
- *
- * App Router 的动态路由：
- *   文件路径 app/result/[taskId]/page.tsx 中的 [taskId] 是动态段。
- *   组件会接收到 props.params.taskId（在 client component 里这样取）。
- *
- * 关键 React 知识点：
- *   - useEffect 的清理函数：组件卸载时一定要 clearInterval，不然会内存泄漏
- *   - useRef vs useState：定时器 id 用 ref 存，因为它变化不需要触发重渲染
+ * 模块顺序:
+ *   01 · 四项指标 (矛盾对卡片带 2px 琥珀左条)
+ *   02 · 观点分布条 (OpinionBar)
+ *   03 · 核心矛盾对 (ContradictionCards)
+ *   04 · 争论网络图 (DebateNetwork)
+ *   05 · AI 智能解读 (综述段落 + 研究方向建议, 合并在同一容器)
+ *   06 · 论文列表 (Tab: 全部 / 高争议 / 核心)
+ *   07 · 所有主张 (可折叠)
  */
-
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -27,22 +22,27 @@ import {
   TaskStatusResponse,
   exportReport,
   getResult,
-  getReview,
   getTaskStatus,
   startAnalysis,
+  type Claim,
+  type Paper,
+  type Relation,
+  type ExportFormat,
 } from "@/lib/api";
 import { useRouter } from "next/navigation";
 import LoadingSteps from "@/components/LoadingSteps";
-import DivergenceCard from "@/components/DivergenceCard";
-import { ExternalLink } from "lucide-react";
+import OpinionBar from "@/components/OpinionBar";
+import ContradictionCards from "@/components/ContradictionCards";
+import AiReview from "@/components/AiReview";
+import RecommendationPanel from "@/components/RecommendationPanel";
 
-// ECharts 依赖 window，禁用 SSR
+// ECharts 依赖 window, 禁用 SSR
 const ContradictionMatrix = dynamic(
   () => import("@/components/ContradictionMatrix"),
   { ssr: false }
 );
-const TimelineEvolution = dynamic(
-  () => import("@/components/TimelineEvolution"),
+const DebateNetwork = dynamic(
+  () => import("@/components/DebateNetwork"),
   { ssr: false }
 );
 
@@ -51,516 +51,705 @@ interface PageProps {
 }
 
 export default function ResultPage({ params }: PageProps) {
-  const taskId = params.taskId;
+  const { taskId } = params;
   const router = useRouter();
 
-  // 任务状态（轮询返回的）
-  const [taskStatus, setTaskStatus] = useState<TaskStatusResponse | null>(null);
-  // 完整结果（任务 done 后才取）
+  const [status, setStatus] = useState<TaskStatusResponse | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
-  // 出错信息
-  const [error, setError] = useState<string | null>(null);
-  // "刷新数据"按钮的 loading 状态
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] = useState<ExportFormat | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // 用 ref 存 interval id，避免触发额外渲染
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // ===== 综述相关状态（切片 9）=====
-  // reviewText: 完整综述文本；reviewDisplayed: 打字机当前显示到的字数对应的子串
-  // reviewLoading: 正在调 /api/review；reviewError: 请求失败原因
-  const [reviewText, setReviewText] = useState<string | null>(null);
-  const [reviewDisplayed, setReviewDisplayed] = useState("");
-  const [reviewLoading, setReviewLoading] = useState(false);
-  const [reviewError, setReviewError] = useState<string | null>(null);
-  // 打字机定时器 id
-  const typewriterRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // 给矩阵组件用的 paper_id → title 映射。
-  // 必须在所有早 return 之前声明，遵守 React 的 rules-of-hooks
-  const paperTitleById = useMemo(() => {
-    if (!result) return {};
-    const map: Record<number, string> = {};
-    for (const p of result.papers) map[p.id] = p.title;
-    return map;
-  }, [result]);
-
+  // —— 轮询 ——
   useEffect(() => {
-    let cancelled = false;
-
+    let mounted = true;
     const tick = async () => {
       try {
-        const status = await getTaskStatus(taskId);
-        if (cancelled) return;
-
-        setTaskStatus(status);
-
-        if (status.status === "done") {
-          // 拉完整结果
-          const data = await getResult(taskId);
-          if (cancelled) return;
-          setResult(data);
-          // 停止轮询
-          if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-          }
-        } else if (status.status === "failed") {
-          setError(status.error || "任务失败，原因未知");
-          if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-          }
+        const s = await getTaskStatus(taskId);
+        if (!mounted) return;
+        setStatus(s);
+        if (s.status === "done") {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+          const r = await getResult(taskId);
+          if (mounted) setResult(r);
+        } else if (s.status === "failed") {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
         }
       } catch (e: unknown) {
-        if (cancelled) return;
-        const message = e instanceof Error ? e.message : "未知错误";
-        setError(message);
-        if (intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
+        if (mounted)
+          setFetchError(e instanceof Error ? e.message : "加载失败");
       }
     };
-
-    // 立即跑一次（不等 2 秒）
     tick();
-    // 然后每 2 秒一次
-    intervalRef.current = setInterval(tick, 2000);
-
-    // 清理函数：组件卸载或 taskId 变化时停止轮询
+    pollRef.current = setInterval(tick, 2000);
     return () => {
-      cancelled = true;
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
+      mounted = false;
+      if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [taskId]);
 
-  // ===== 打字机效果（切片 9）=====
-  // 每当 reviewText 变化（生成成功），就启动一个 setInterval
-  // 一次多吐一个字，直到整段出完就 clearInterval。
-  // 用 useEffect 的清理函数确保组件卸载时不会泄漏定时器。
-  useEffect(() => {
-    if (!reviewText) return;
-    setReviewDisplayed(""); // 先清空，避免叠加上一次的残留
-    let i = 0;
-    typewriterRef.current = setInterval(() => {
-      i += 1;
-      setReviewDisplayed(reviewText.slice(0, i));
-      if (i >= reviewText.length) {
-        if (typewriterRef.current) {
-          clearInterval(typewriterRef.current);
-          typewriterRef.current = null;
-        }
-      }
-    }, 35); // 约每秒 28 字，节奏自然
-
-    return () => {
-      if (typewriterRef.current) {
-        clearInterval(typewriterRef.current);
-        typewriterRef.current = null;
-      }
-    };
-  }, [reviewText]);
-
-  /**
-   * "刷新数据"按钮：带 refresh=true 重新提交分析 → 跳到新任务页面。
-   * 为什么跳新 taskId 而不是在当前页面重新加载？
-   *   因为后端任务是"新建"的——它有自己的 taskId 和全新的状态。
-   *   如果留在原页面改 taskId，轮询清理逻辑会变得很复杂；
-   *   不如直接跳转，简单又不会有残留状态。
-   */
+  // —— 刷新数据: 新任务 + 跳转 ——
   const handleRefresh = async () => {
     if (!result) return;
     setRefreshing(true);
     try {
-      const res = await startAnalysis(result.query, result.papers.length, true);
-      router.push(`/result/${res.task_id}`);
+      const resp = await startAnalysis(result.query, result.papers.length, true);
+      router.push(`/result/${resp.task_id}`);
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : "刷新失败";
-      setError(message);
+      setFetchError(e instanceof Error ? e.message : "刷新失败");
       setRefreshing(false);
     }
   };
 
-  const handleExport = async () => {
-    if (!result) return;
-    setExporting(true);
+  // —— 导出 ——
+  const handleExport = async (format: ExportFormat) => {
+    setExporting(format);
     try {
-      const { blob, filename } = await exportReport(taskId, "md");
+      const { blob, filename } = await exportReport(taskId, format);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = filename;
       document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
+      a.remove();
       URL.revokeObjectURL(url);
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : "导出失败";
-      setError(message);
+      setFetchError(e instanceof Error ? e.message : "导出失败");
     } finally {
-      setExporting(false);
+      setExporting(null);
     }
   };
 
-  // 点击"生成综述"按钮：调后端 /api/review
-  const handleGenerateReview = async () => {
-    setReviewLoading(true);
-    setReviewError(null);
-    setReviewText(null);
-    setReviewDisplayed("");
-    try {
-      const data = await getReview(taskId);
-      setReviewText(data.review);
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : "未知错误";
-      setReviewError(message);
-    } finally {
-      setReviewLoading(false);
-    }
-  };
-
-  // ===== 渲染分支：错误 =====
-  if (error) {
+  // —— 渲染 ——
+  if (fetchError) {
+    return <ErrorScreen message={fetchError} />;
+  }
+  if (!status) {
+    return <SkeletonScreen taskId={taskId} />;
+  }
+  if (status.status === "failed") {
     return (
-      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white">
-        <div className="container mx-auto flex min-h-screen max-w-2xl flex-col items-center justify-center px-4">
-          <div className="w-full rounded-2xl border border-red-400/30 bg-red-500/10 p-8 backdrop-blur-md">
-            <h2 className="mb-3 text-2xl font-semibold text-red-200">任务失败</h2>
-            <p className="mb-4 text-sm text-red-200/80 break-words">{error}</p>
-            <Link
-              href="/"
-              className="inline-block rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/20"
-            >
-              ← 返回首页
-            </Link>
-          </div>
-        </div>
-      </main>
+      <ErrorScreen
+        message={status.error || "任务失败, 请返回首页重试"}
+        backHref="/"
+      />
     );
   }
-
-  // ===== 渲染分支：进行中 =====
-  // 用 LoadingSteps 组件替代以前的转圈 spinner，给用户讲一个 4 步的"故事"
   if (!result) {
-    return (
-      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white">
-        <div className="container mx-auto flex min-h-screen max-w-2xl flex-col items-center justify-center px-4 text-center">
-          <AnimatedTitle />
+    return <PendingScreen status={status} />;
+  }
 
-          {/* 4 步进度叙事 —— 跟着后端 progress 字段自动推进 */}
-          <LoadingSteps progress={taskStatus?.progress} />
+  return (
+    <div className="min-h-screen bg-bg-base text-text-primary">
+      <TopBar
+        query={result.query}
+        dataFetchedAt={result.data_fetched_at}
+        onRefresh={handleRefresh}
+        refreshing={refreshing}
+        onExport={handleExport}
+        exporting={exporting}
+      />
 
-          {/* 状态徽章 */}
-          {taskStatus && (
-            <div className="mt-4 inline-block rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
-              status: {taskStatus.status}
+      <main className="mx-auto w-full max-w-[1200px] space-y-10 px-6 py-10">
+        {/* 模块 01 · 四项指标 */}
+        <MetricsGrid result={result} />
+
+        {/* 模块 02 · 观点分布条 */}
+        <section className="rounded-lg border border-border bg-bg-surface p-6">
+          <OpinionBar claims={result.claims} />
+        </section>
+
+        {/* 模块 03 · 核心矛盾对 */}
+        <ContradictionCards
+          claims={result.claims}
+          matrix={result.matrix}
+          papers={result.papers}
+        />
+
+        {/* 模块 04 · 争论网络图 */}
+        <DebateNetwork
+          claims={result.claims}
+          matrix={result.matrix}
+          papers={result.papers}
+        />
+
+        {/* 模块 05 · AI 智能解读 (综述 + 研究方向建议) */}
+        <AiInsightsSection
+          taskId={taskId}
+          query={result.query}
+          claims={result.claims}
+          matrix={result.matrix}
+          papers={result.papers}
+        />
+
+        {/* 模块 06 · 论文列表 */}
+        <PapersList papers={result.papers} claims={result.claims} matrix={result.matrix} />
+
+        {/* 模块 07 · 所有主张 (折叠) */}
+        <AllClaims claims={result.claims} papers={result.papers} />
+
+        {/* 关系矩阵 (保留, 放在最底方便答辩) */}
+        <section className="rounded-lg border border-border bg-bg-surface">
+          <header className="border-b border-border px-6 py-4">
+            <h2 className="text-17 font-medium">N × N 关系矩阵</h2>
+          </header>
+          <div className="bg-bg-inset">
+            <ContradictionMatrix
+              claims={result.claims}
+              matrix={result.matrix}
+              paperTitleById={Object.fromEntries(
+                result.papers.map((p) => [p.id, p.title])
+              )}
+              papers={result.papers}
+            />
+          </div>
+        </section>
+      </main>
+
+      <footer className="border-t border-border">
+        <div className="mx-auto flex max-w-[1200px] items-center justify-between px-6 py-4 text-11 text-text-muted">
+          <Link href="/" className="hover:text-text-primary">
+            ← 返回首页
+          </Link>
+          <span className="num">PaperTrace · task {taskId.slice(0, 8)}</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+/* ====================================================== */
+/* 顶部栏                                                    */
+/* ====================================================== */
+function TopBar({
+  query,
+  dataFetchedAt,
+  onRefresh,
+  refreshing,
+  onExport,
+  exporting,
+}: {
+  query: string;
+  dataFetchedAt: string;
+  onRefresh: () => void;
+  refreshing: boolean;
+  onExport: (fmt: ExportFormat) => void;
+  exporting: ExportFormat | null;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  return (
+    <div className="sticky top-0 z-20 border-b border-border bg-bg-base/90 backdrop-blur">
+      <div className="mx-auto flex max-w-[1200px] flex-wrap items-center gap-4 px-6 py-3">
+        <Link
+          href="/"
+          className="flex items-center gap-2 text-13 text-text-secondary transition-colors hover:text-text-primary"
+        >
+          ← 返回
+        </Link>
+
+        <span className="inline-flex items-center gap-2 rounded-sm border border-accent-support/40 bg-accent-support/10 px-2.5 py-1 text-11 text-accent-support">
+          <span className="h-[6px] w-[6px] rounded-sm bg-accent-support" />
+          已完成
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-15 text-text-primary">{query}</div>
+          <div className="text-11 text-text-muted">
+            数据获取于 {formatDate(dataFetchedAt)}
+          </div>
+        </div>
+
+        {/* 导出菜单 */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setMenuOpen((v) => !v)}
+            disabled={!!exporting}
+            className="rounded border border-border px-3 py-1.5 text-12 text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary disabled:opacity-60"
+          >
+            {exporting ? "导出中 ..." : "导出 ▾"}
+          </button>
+          {menuOpen && (
+            <div
+              className="absolute right-0 mt-1 w-44 overflow-hidden rounded border border-border bg-bg-surface text-12"
+              onMouseLeave={() => setMenuOpen(false)}
+            >
+              <button
+                type="button"
+                className="block w-full px-3 py-2 text-left text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onExport("md");
+                }}
+              >
+                Markdown 报告 (.md)
+              </button>
+              <button
+                type="button"
+                className="block w-full border-t border-border px-3 py-2 text-left text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onExport("bib");
+                }}
+              >
+                BibTeX 文献 (.bib)
+              </button>
             </div>
           )}
         </div>
-      </main>
-    );
-  }
 
-  // ===== 渲染分支：完成 =====
-  return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white">
-      <div className="container mx-auto max-w-5xl px-4 py-10">
-        {/* 顶部：query + 返回 + 获取时间 + 刷新按钮 */}
-        <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <Link
-              href="/"
-              className="mb-2 inline-block text-sm text-indigo-300 hover:text-indigo-200"
-            >
-              ← 返回首页
-            </Link>
-            <h1 className="text-3xl font-bold">分析结果</h1>
-            <p className="mt-1 text-slate-400">
-              query：<span className="text-slate-200">{result.query}</span>
-            </p>
-            {/* 数据获取时间：把 ISO 时间戳转为用户本地时间展示 */}
-            {result.data_fetched_at && (
-              <p className="mt-1 text-xs text-slate-500">
-                数据获取于{" "}
-                {new Date(result.data_fetched_at).toLocaleString("zh-CN", {
-                  year: "numeric",
-                  month: "2-digit",
-                  day: "2-digit",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </p>
-            )}
-          </div>
-          <div className="flex shrink-0 flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={handleExport}
-              disabled={exporting}
-              className="shrink-0 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-200 transition-all duration-200 hover:-translate-y-0.5 hover:border-emerald-300/60 hover:bg-emerald-500/20 hover:shadow-lg hover:shadow-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
-            >
-              {exporting ? (
-                <span className="flex items-center gap-2">
-                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-emerald-300/40 border-t-emerald-300" />
-                  导出中 ...
-                </span>
-              ) : (
-                "📥 导出报告"
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={handleRefresh}
-              disabled={refreshing}
-              className="shrink-0 rounded-lg border border-purple-400/40 bg-purple-500/10 px-4 py-2 text-sm font-medium text-purple-200 transition-all duration-200 hover:-translate-y-0.5 hover:border-purple-300/60 hover:bg-purple-500/20 hover:shadow-lg hover:shadow-purple-500/20 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
-            >
-              {refreshing ? (
-                <span className="flex items-center gap-2">
-                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-purple-300/40 border-t-purple-300" />
-                  刷新中 ...
-                </span>
-              ) : (
-                "🔄 刷新数据"
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* 统计卡片 */}
-        <div className="mb-8 grid grid-cols-2 gap-3 md:grid-cols-4">
-          <StatCard label="论文" value={result.stats.papers_count} color="indigo" />
-          <StatCard label="主张" value={result.stats.claims_count} color="purple" />
-          <StatCard label="支持对" value={result.stats.support_pairs} color="emerald" />
-          <StatCard label="矛盾对" value={result.stats.contradict_pairs} color="rose" />
-        </div>
-
-        {/* 论文列表 */}
-        <section className="mb-10">
-          <h2 className="mb-3 text-xl font-semibold text-slate-200">论文</h2>
-          <div className="space-y-3">
-            {result.papers.map((p) => (
-              <div
-                key={p.id}
-                className="rounded-xl border border-white/10 bg-white/5 p-4 backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:border-purple-400/50 hover:shadow-xl hover:shadow-purple-500/20"
-              >
-                {/* 标题 + 外链图标 */}
-                <div className="flex items-start gap-1.5">
-                  <span className="text-sm font-medium text-white">{p.title}</span>
-                  <PaperLink paper={p} />
-                </div>
-                {/* 来源 + DOI */}
-                <div className="mt-1 text-xs text-slate-500">
-                  {p.source && <>📄 {p.source === "openalex" ? "OpenAlex" : "arXiv"}</>}
-                  {p.doi && <> · DOI: {p.doi}</>}
-                </div>
-                <div className="mt-1 text-xs text-slate-400">
-                  {p.year || "—"} · {p.authors.slice(0, 3).join(", ")}
-                  {p.authors.length > 3 ? " et al." : ""} · 引用 {p.citation_count}
-                </div>
-                <p className="mt-2 line-clamp-3 text-sm text-slate-300">
-                  {p.abstract}
-                </p>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* 主张列表 */}
-        <section className="mb-10">
-          <h2 className="mb-3 text-xl font-semibold text-slate-200">
-            抽取出的主张
-          </h2>
-          <div className="space-y-2">
-            {result.claims.map((c) => {
-              const dirColor =
-                c.direction === "positive"
-                  ? "text-emerald-300 bg-emerald-500/10 border-emerald-400/30"
-                  : c.direction === "negative"
-                  ? "text-rose-300 bg-rose-500/10 border-rose-400/30"
-                  : "text-slate-300 bg-slate-500/10 border-slate-400/30";
-              return (
-                <div
-                  key={c.id}
-                  className="rounded-lg border border-white/10 bg-white/5 p-3 backdrop-blur-xl transition-all duration-200 hover:border-purple-400/50 hover:shadow-lg hover:shadow-purple-500/10"
-                >
-                  <div className="flex items-start gap-2">
-                    <span
-                      className={`shrink-0 rounded border px-2 py-0.5 text-xs ${dirColor}`}
-                    >
-                      {c.direction}
-                    </span>
-                    <div className="flex-1 text-sm">
-                      <span className="text-slate-300">{c.subject}</span>
-                      <span className="mx-1 text-slate-500">·</span>
-                      <span className="text-slate-400">{c.intervention}</span>
-                      <div className="mt-0.5 text-slate-200">{c.conclusion}</div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* 分歧指数大卡片 —— 一句话总结整次分析的"撕裂程度" */}
-        <DivergenceCard stats={result.stats} />
-
-        {/* 矛盾矩阵热力图 */}
-        <section className="mb-10">
-          <h2 className="mb-3 text-xl font-semibold text-slate-200">
-            矛盾矩阵
-          </h2>
-          <ContradictionMatrix
-            claims={result.claims}
-            matrix={result.matrix}
-            paperTitleById={paperTitleById}
-            papers={result.papers}
-          />
-        </section>
-
-        {/* 观点演化时间轴 */}
-        {result.timeline && result.timeline.length > 0 && (
-          <section className="mb-10">
-            <h2 className="mb-3 text-xl font-semibold text-slate-200">
-              观点演化时间轴
-            </h2>
-            <TimelineEvolution timeline={result.timeline} />
-          </section>
-        )}
-
-        {/* ================ 自动综述（切片 9 亮点）================ */}
-        <section className="mb-10">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-xl font-semibold text-slate-200">
-              自动综述
-            </h2>
-            <button
-              type="button"
-              onClick={handleGenerateReview}
-              disabled={reviewLoading}
-              className="rounded-lg bg-gradient-to-r from-indigo-500 to-purple-500 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition-all duration-200 hover:-translate-y-0.5 hover:from-indigo-400 hover:to-purple-400 hover:shadow-xl hover:shadow-indigo-500/30 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
-            >
-              {reviewLoading
-                ? "生成中 ..."
-                : reviewText
-                ? "重新生成"
-                : "一键生成综述"}
-            </button>
-          </div>
-
-          <div className="rounded-xl border border-white/10 bg-white/5 p-6 backdrop-blur-xl transition-all hover:border-purple-400/30">
-            {reviewError && (
-              <div className="mb-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200">
-                生成失败：{reviewError}
-              </div>
-            )}
-
-            {!reviewText && !reviewLoading && !reviewError && (
-              <p className="text-sm text-slate-400">
-                点击右上角按钮，让 AI 根据上面已抽取的主张和矛盾矩阵，自动生成一段
-                200-400 字的中文综述段落。引用编号与上方论文列表一一对应。
-              </p>
-            )}
-
-            {reviewLoading && !reviewText && (
-              <div className="flex items-center gap-3 text-sm text-slate-300">
-                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-indigo-400/30 border-t-indigo-400" />
-                正在让 DeepSeek 编织段落，预计 10-20 秒 ...
-              </div>
-            )}
-
-            {reviewText && (
-              <div className="prose prose-invert max-w-none">
-                {/* 打字机效果：reviewDisplayed 随 setInterval 逐字增长 */}
-                <p className="whitespace-pre-wrap text-base leading-relaxed text-slate-100">
-                  {reviewDisplayed}
-                  {reviewDisplayed.length < reviewText.length && (
-                    <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-indigo-300 align-middle" />
-                  )}
-                </p>
-                {reviewDisplayed.length >= reviewText.length && (
-                  <div className="mt-3 text-xs text-slate-500">
-                    字数（含标点）：{reviewText.length}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={refreshing}
+          className="rounded border border-border px-3 py-1.5 text-12 text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary disabled:opacity-60"
+        >
+          {refreshing ? "刷新中 ..." : "刷新数据"}
+        </button>
       </div>
-    </main>
-  );
-}
-
-// ============== 子组件 ==============
-
-/** 论文外链图标：按 doi > url > openalex_id 优先级选链接 */
-function PaperLink({ paper }: { paper: import("@/lib/api").Paper }) {
-  const href = paper.doi
-    ? `https://doi.org/${paper.doi}`
-    : paper.url
-    ? paper.url
-    : paper.paper_id
-    ? `https://openalex.org/${paper.paper_id}`
-    : null;
-
-  if (!href) return null;
-
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      title="查看原文"
-      className="shrink-0 text-slate-400 transition-all duration-200 hover:text-purple-400 hover:translate-x-0.5 hover:-translate-y-0.5"
-    >
-      <ExternalLink size={14} />
-    </a>
-  );
-}
-
-/** 加载中标题："正在分析中" + 跳动省略号（.  ..  ...  循环） */
-function AnimatedTitle() {
-  const [dots, setDots] = useState("");
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setDots((prev) => (prev.length >= 3 ? "" : prev + "."));
-    }, 400);
-    return () => clearInterval(id);
-  }, []);
-
-  return <h2 className="mb-6 text-2xl font-semibold">正在分析中{dots}</h2>;
-}
-
-interface StatCardProps {
-  label: string;
-  value: number;
-  color: "indigo" | "purple" | "emerald" | "rose";
-}
-
-function StatCard({ label, value, color }: StatCardProps) {
-  // Tailwind 不能拼接 class 名（JIT 会丢），所以预先列出所有可能
-  const colorMap = {
-    indigo: "from-indigo-500/20 to-indigo-500/5 border-indigo-400/30",
-    purple: "from-purple-500/20 to-purple-500/5 border-purple-400/30",
-    emerald: "from-emerald-500/20 to-emerald-500/5 border-emerald-400/30",
-    rose: "from-rose-500/20 to-rose-500/5 border-rose-400/30",
-  } as const;
-
-  return (
-    <div
-      className={`rounded-xl border bg-gradient-to-br p-4 backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-purple-500/10 ${colorMap[color]}`}
-    >
-      <div className="text-xs uppercase tracking-wider text-slate-400">
-        {label}
-      </div>
-      <div className="mt-1 text-3xl font-bold text-white">{value}</div>
     </div>
   );
+}
+
+/* ====================================================== */
+/* 指标卡片组                                                 */
+/* ====================================================== */
+function MetricsGrid({ result }: { result: AnalysisResult }) {
+  const { stats } = result;
+  const totalPairs = stats.contradict_pairs + stats.support_pairs;
+  const divergence = totalPairs > 0 ? stats.contradict_pairs / totalPairs : 0;
+
+  return (
+    <section className="grid grid-cols-2 gap-4 md:grid-cols-4">
+      <MetricCard label="论文" value={stats.papers_count} unit="篇" />
+      <MetricCard label="核心主张" value={stats.claims_count} unit="条" />
+      <MetricCard
+        label="矛盾对"
+        value={stats.contradict_pairs}
+        unit="对"
+        accent
+        secondary={`分歧率 ${Math.round(divergence * 100)}%`}
+      />
+      <MetricCard
+        label="共识对"
+        value={stats.support_pairs}
+        unit="对"
+        tone="support"
+      />
+    </section>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  unit,
+  secondary,
+  accent,
+  tone,
+}: {
+  label: string;
+  value: number;
+  unit?: string;
+  secondary?: string;
+  accent?: boolean;
+  tone?: "support";
+}) {
+  return (
+    <div className="relative overflow-hidden rounded-lg border border-border bg-bg-surface p-5">
+      {accent && (
+        <span
+          aria-hidden
+          className="absolute left-0 top-0 h-full w-[2px] bg-accent-conflict"
+        />
+      )}
+      {tone === "support" && (
+        <span
+          aria-hidden
+          className="absolute left-0 top-0 h-full w-[2px] bg-accent-support/60"
+        />
+      )}
+      <div className="eyebrow">{label}</div>
+      <div className="mt-3 flex items-baseline gap-1">
+        <span className="num text-28 font-medium text-text-primary">
+          {value}
+        </span>
+        {unit && <span className="text-12 text-text-muted">{unit}</span>}
+      </div>
+      {secondary && (
+        <div className="mt-1 text-11 text-text-muted">{secondary}</div>
+      )}
+    </div>
+  );
+}
+
+/* ====================================================== */
+/* 模块 05 · AI 智能解读 (综述 + 研究方向建议 合并)           */
+/* ====================================================== */
+function AiInsightsSection({
+  taskId,
+  query,
+  claims,
+  matrix,
+  papers,
+}: {
+  taskId: string;
+  query: string;
+  claims: Claim[];
+  matrix: Relation[][];
+  papers: Paper[];
+}) {
+  return (
+    <section className="overflow-hidden rounded-lg border border-border bg-bg-surface">
+      {/* 共享头部 */}
+      <header className="border-b border-border px-6 py-4">
+        <h2 className="text-17 font-medium text-text-primary">AI 智能解读</h2>
+        <p className="mt-1 text-11 text-text-muted">
+          基于本次分析自动生成的综述段落与研究方向建议
+        </p>
+      </header>
+
+      {/* 上半: 综述段落 */}
+      <div className="border-b border-border px-6 py-6">
+        <AiReview taskId={taskId} embedded />
+      </div>
+
+      {/* 下半: 研究方向建议 (淡紫径向光晕作背景层次) */}
+      <div
+        className="px-6 py-6"
+        style={{
+          background:
+            "radial-gradient(ellipse at 30% 0%, rgba(139,127,255,0.05) 0%, transparent 60%)",
+        }}
+      >
+        <RecommendationPanel
+          query={query}
+          claims={claims}
+          matrix={matrix}
+          papers={papers}
+          embedded
+        />
+      </div>
+    </section>
+  );
+}
+
+/* ====================================================== */
+/* 模块 06 · 论文列表                                         */
+/* ====================================================== */
+type PapersTab = "all" | "high-contradict" | "core";
+
+function PapersList({
+  papers,
+  claims,
+  matrix,
+}: {
+  papers: Paper[];
+  claims: Claim[];
+  matrix: Relation[][];
+}) {
+  // 统计每篇论文参与的矛盾数, 为"高争议" tab 排序用
+  const contradictByPaper = useMemo(() => {
+    const counter = new Map<number, number>();
+    const n = claims.length;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const cell = matrix?.[i]?.[j];
+        if (!cell || cell.relation !== "contradict") continue;
+        if (cell.confidence < 0.5) continue;
+        const pi = claims[i].paper_id;
+        const pj = claims[j].paper_id;
+        counter.set(pi, (counter.get(pi) || 0) + 1);
+        counter.set(pj, (counter.get(pj) || 0) + 1);
+      }
+    }
+    return counter;
+  }, [claims, matrix]);
+
+  // 核心论文 = 引用数前 30%
+  const coreSet = useMemo(() => {
+    const sorted = [...papers].sort((a, b) => b.citation_count - a.citation_count);
+    const n = Math.max(1, Math.ceil(sorted.length * 0.3));
+    return new Set(sorted.slice(0, n).map((p) => p.id));
+  }, [papers]);
+
+  const [tab, setTab] = useState<PapersTab>("all");
+  const [sort, setSort] = useState<"citation" | "year">("citation");
+
+  const shown = useMemo(() => {
+    let list = [...papers];
+    if (tab === "high-contradict") {
+      list = list.filter((p) => (contradictByPaper.get(p.id) || 0) > 0);
+      list.sort(
+        (a, b) =>
+          (contradictByPaper.get(b.id) || 0) - (contradictByPaper.get(a.id) || 0)
+      );
+    } else if (tab === "core") {
+      list = list.filter((p) => coreSet.has(p.id));
+    }
+    if (tab === "all" || tab === "core") {
+      list.sort((a, b) => {
+        if (sort === "citation") return b.citation_count - a.citation_count;
+        return (b.year ?? 0) - (a.year ?? 0);
+      });
+    }
+    return list;
+  }, [papers, tab, sort, contradictByPaper, coreSet]);
+
+  return (
+    <section className="rounded-lg border border-border bg-bg-surface">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
+        <h2 className="text-17 font-medium">论文列表</h2>
+        <div className="flex items-center gap-2 text-12">
+          <div className="flex items-center rounded border border-border bg-bg-elevated p-1">
+            <TabChip current={tab} value="all" onClick={setTab}>
+              全部 · {papers.length}
+            </TabChip>
+            <TabChip current={tab} value="high-contradict" onClick={setTab}>
+              高争议
+            </TabChip>
+            <TabChip current={tab} value="core" onClick={setTab}>
+              核心
+            </TabChip>
+          </div>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as "citation" | "year")}
+            className="rounded border border-border bg-bg-elevated px-2 py-1 text-12 text-text-secondary"
+          >
+            <option value="citation">按引用数</option>
+            <option value="year">按年份</option>
+          </select>
+        </div>
+      </header>
+
+      <ul className="divide-y divide-border">
+        {shown.length === 0 && (
+          <li className="px-6 py-10 text-center text-13 text-text-muted">
+            此筛选条件下没有论文。
+          </li>
+        )}
+        {shown.map((p) => {
+          const conflictN = contradictByPaper.get(p.id) || 0;
+          return (
+            <li key={p.id} className="relative px-6 py-4">
+              {conflictN > 0 && (
+                <span
+                  aria-hidden
+                  className="absolute left-0 top-0 h-full w-[2px] bg-accent-conflict"
+                />
+              )}
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-14 text-text-primary">{p.title}</div>
+                  <div className="mt-1 text-12 text-text-muted">
+                    {(p.authors || []).slice(0, 4).join(", ")}
+                    {(p.authors?.length || 0) > 4 ? " 等" : ""}
+                    {p.year ? <span className="num"> · {p.year}</span> : null}
+                    {p.source ? ` · ${p.source}` : ""}
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-11 text-text-muted">
+                    <span className="num">
+                      被引 <span className="text-text-primary">{p.citation_count}</span>
+                    </span>
+                    {conflictN > 0 && (
+                      <span>
+                        参与 <span className="num text-accent-conflict">{conflictN}</span> 对矛盾
+                      </span>
+                    )}
+                    {coreSet.has(p.id) && (
+                      <span className="text-accent-support">核心论文</span>
+                    )}
+                  </div>
+                </div>
+
+                {paperUrl(p) && (
+                  <a
+                    href={paperUrl(p)!}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 rounded border border-border px-2.5 py-1 text-11 text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary"
+                  >
+                    打开 ↗
+                  </a>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function TabChip<T extends string>({
+  current,
+  value,
+  onClick,
+  children,
+}: {
+  current: T;
+  value: T;
+  onClick: (v: T) => void;
+  children: React.ReactNode;
+}) {
+  const active = current === value;
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(value)}
+      className={`rounded-sm px-3 py-1 text-12 transition-colors ${
+        active
+          ? "bg-brand/15 text-brand"
+          : "text-text-secondary hover:bg-bg-inset hover:text-text-primary"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function paperUrl(p: Paper): string | null {
+  if (p.doi) return `https://doi.org/${p.doi}`;
+  if (p.url) return p.url;
+  return null;
+}
+
+/* ====================================================== */
+/* 模块 07 · 所有主张 (默认折叠)                              */
+/* ====================================================== */
+function AllClaims({ claims, papers }: { claims: Claim[]; papers: Paper[] }) {
+  const [open, setOpen] = useState(false);
+  const paperById = useMemo(() => {
+    const m = new Map<number, Paper>();
+    papers.forEach((p) => m.set(p.id, p));
+    return m;
+  }, [papers]);
+
+  const dirColor: Record<string, string> = {
+    positive: "text-accent-support",
+    negative: "text-accent-conflict",
+    neutral: "text-text-secondary",
+  };
+  const dirLabel: Record<string, string> = {
+    positive: "支持",
+    negative: "反对",
+    neutral: "中立",
+  };
+
+  return (
+    <section className="rounded-lg border border-border bg-bg-surface">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-6 py-4 text-left transition-colors hover:bg-bg-elevated/30"
+      >
+        <h2 className="text-17 font-medium">
+          全部主张 · <span className="num">{claims.length}</span> 条
+        </h2>
+        <span className="text-12 text-text-muted">
+          {open ? "收起 ▴" : "展开 ▾"}
+        </span>
+      </button>
+      {open && (
+        <ol className="divide-y divide-border border-t border-border">
+          {claims.map((c, i) => {
+            const paper = paperById.get(c.paper_id);
+            return (
+              <li key={c.id} className="px-6 py-4">
+                <div className="flex items-baseline gap-3">
+                  <span className="num text-12 text-text-muted">#{i + 1}</span>
+                  <span
+                    className={`text-11 uppercase tracking-label ${dirColor[c.direction] || "text-text-secondary"}`}
+                  >
+                    {dirLabel[c.direction] || c.direction}
+                  </span>
+                </div>
+                <p className="mt-2 text-14 text-text-primary">{c.conclusion}</p>
+                <p className="mt-2 text-12 text-text-muted">
+                  主题: {c.subject} · 干预: {c.intervention}
+                </p>
+                {paper && (
+                  <p className="mt-1 text-11 text-text-muted">
+                    <span className="italic">{paper.title}</span>
+                    {paper.year ? (
+                      <span className="num"> · {paper.year}</span>
+                    ) : null}
+                  </p>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+/* ====================================================== */
+/* Pending / Skeleton / Error                               */
+/* ====================================================== */
+function PendingScreen({ status }: { status: TaskStatusResponse }) {
+  return (
+    <div className="mx-auto flex min-h-screen max-w-2xl flex-col items-start justify-center px-6">
+      <div className="eyebrow">task {status.task_id.slice(0, 8)}</div>
+      <h1 className="mt-2 text-24 font-medium">正在分析 ...</h1>
+      <p className="mt-2 text-13 text-text-secondary">{status.progress}</p>
+      <div className="mt-8 w-full">
+        <LoadingSteps progress={status.progress} />
+      </div>
+    </div>
+  );
+}
+
+function SkeletonScreen({ taskId }: { taskId: string }) {
+  return (
+    <div className="mx-auto flex min-h-screen max-w-2xl flex-col items-start justify-center px-6">
+      <div className="eyebrow">task {taskId.slice(0, 8)}</div>
+      <h1 className="mt-2 text-24 font-medium">正在连接任务 ...</h1>
+      <p className="mt-2 text-13 text-text-secondary">稍等片刻</p>
+    </div>
+  );
+}
+
+function ErrorScreen({
+  message,
+  backHref = "/",
+}: {
+  message: string;
+  backHref?: string;
+}) {
+  return (
+    <div className="mx-auto flex min-h-screen max-w-2xl flex-col items-start justify-center px-6">
+      <div className="eyebrow text-accent-conflict">error</div>
+      <h1 className="mt-2 text-24 font-medium">出错了</h1>
+      <p className="mt-3 text-13 text-text-secondary">{message}</p>
+      <Link
+        href={backHref}
+        className="mt-6 rounded border border-border px-3 py-1.5 text-12 text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary"
+      >
+        返回首页
+      </Link>
+    </div>
+  );
+}
+
+function formatDate(iso: string): string {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
 }

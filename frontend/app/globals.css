@@ -2,25 +2,88 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   PaperTrace v2 · 全局基样式
+   ------------------------------------------------------------
+   · 所有颜色使用 tailwind.config.ts 的 token, 不在这里硬编码
+   · 字体变量由 app/layout.tsx 通过 next/font/google 注入
+============================================================ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: #111428;
+  color: #E8E9F3;
+  font-family:
+    var(--font-noto-sans-sc),
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Arial,
+    sans-serif;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 移除 chrome 自动填充的黄底 */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #22274A inset !important;
+  -webkit-text-fill-color: #E8E9F3 !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+/* 自定义滚动条 (深色底上更协调) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #242845;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2F3355;
 }
 
 @layer utilities {
+  /* 小号大写标签, 与 letterSpacing 配合使用 */
+  .eyebrow {
+    font-size: 11px;
+    line-height: 16px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #6B6F8A;
+    font-weight: 500;
+  }
+
+  /* 衬线正文 (综述段落、引用块) */
+  .prose-serif {
+    font-family:
+      var(--font-noto-serif-sc),
+      ui-serif,
+      Georgia,
+      "Times New Roman",
+      serif;
+    font-size: 15px;
+    line-height: 28px;
+    color: #E8E9F3;
+  }
+
+  /* 数据展示用等宽风格 (不引入 mono 字体, 改用 tabular-nums) */
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+
   .text-balance {
     text-wrap: balance;
   }
