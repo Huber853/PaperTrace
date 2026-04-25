@@ -385,7 +385,7 @@ export default function HomePage() {
 
           {/* 项目简介 (衬线) */}
           <p className="mx-auto mt-6 max-w-2xl text-center font-serif text-15 leading-[28px] text-text-secondary">
-            PaperTrace 把"读完十几篇英文论文才能写出一段综述"这件事自动化:
+            PaperTrace 把&quot;读完十几篇英文论文才能写出一段综述&quot;这件事自动化:
             <br />
             它先用 <span className="text-text-primary">LLM 把每篇论文压成结构化主张</span>,
             再两两判定关系,
