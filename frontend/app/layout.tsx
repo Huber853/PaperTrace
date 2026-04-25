@@ -7,22 +7,22 @@
  *   会按 tailwind.config.ts 的配置引用这两个变量
  */
 import type { Metadata } from "next";
-import { Noto_Sans_SC, Noto_Serif_SC } from "next/font/google";
+// import { Noto_Sans_SC, Noto_Serif_SC } from "next/font/google";
 import "./globals.css";
 
-const notoSans = Noto_Sans_SC({
-  subsets: ["latin"],
-  weight: ["400", "500"],
-  variable: "--font-noto-sans-sc",
-  display: "swap",
-});
+// const notoSans = Noto_Sans_SC({
+//   subsets: ["latin"],
+//   weight: ["400", "500"],
+//   variable: "--font-noto-sans-sc",
+//   display: "swap",
+// });
 
-const notoSerif = Noto_Serif_SC({
-  subsets: ["latin"],
-  weight: ["400", "500"],
-  variable: "--font-noto-serif-sc",
-  display: "swap",
-});
+// const notoSerif = Noto_Serif_SC({
+//   subsets: ["latin"],
+//   weight: ["400", "500"],
+//   variable: "--font-noto-serif-sc",
+//   display: "swap",
+// });
 
 export const metadata: Metadata = {
   title: "PaperTrace · 学术论文矛盾发现工具",
@@ -41,7 +41,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body className={`${notoSans.variable} ${notoSerif.variable} bg-bg-base text-text-primary antialiased`}>
+      <body className={`bg-bg-base text-text-primary antialiased`}>
         {children}
       </body>
     </html>
