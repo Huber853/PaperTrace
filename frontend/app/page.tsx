@@ -26,13 +26,6 @@ const SUGGESTED_QUERIES = [
 
 const DEMO_QUERY = SUGGESTED_QUERIES[0];
 
-// 大致估算: 每篇论文 ≈ 2 条主张, 矩阵规模 ≈ N^2/2 次判定, 每次 ≈ 500 tokens
-function estimate(limit: number) {
-  const secs = Math.round(limit * 1.2 + (limit * limit) / 10);
-  const tokensK = Math.round((limit * 2 + (limit * limit) / 2) * 0.5);
-  return { secs, tokensK };
-}
-
 export default function HomePage() {
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(20);
@@ -40,8 +33,6 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
   const router = useRouter();
-
-  const { secs, tokensK } = estimate(limit);
 
   const submit = async (overrideQuery?: string) => {
     const finalQuery = (overrideQuery ?? query).trim();
@@ -220,7 +211,7 @@ export default function HomePage() {
                     type="button"
                     onClick={() => setQuery(q)}
                     disabled={submitting}
-                    className="group inline-flex items-center gap-1.5 rounded-sm border border-border bg-bg-elevated/40 px-2.5 py-1 text-12 text-text-secondary transition-colors hover:border-border-strong hover:bg-bg-elevated hover:text-text-primary disabled:opacity-60"
+                    className="group inline-flex items-center gap-1.5 rounded-sm border border-border bg-bg-elevated/40 px-2.5 py-1 text-12 text-text-secondary transition-colors hover:border-bord[...]
                   >
                     <span
                       aria-hidden
@@ -241,11 +232,6 @@ export default function HomePage() {
                 </label>
                 <span className="num text-12 text-text-muted">
                   <span className="text-text-primary">{limit}</span> 篇
-                  <span className="text-text-muted"> · </span>
-                  <span className="text-accent-support">~{secs}s</span>
-                  <span className="text-text-muted"> · </span>
-                  <span className="text-brand">~{tokensK}k</span>
-                  <span className="text-text-muted"> tokens</span>
                 </span>
               </div>
               <input
@@ -272,7 +258,7 @@ export default function HomePage() {
                 type="button"
                 onClick={() => submit()}
                 disabled={submitting}
-                className="group relative flex-1 overflow-hidden rounded border border-brand/60 bg-brand/10 px-5 py-3 text-15 font-medium text-brand transition-all hover:bg-brand/20 hover:shadow-[0_0_24px_-6px_rgba(180,174,255,0.5)] disabled:cursor-not-allowed disabled:opacity-60"
+                className="group relative flex-1 overflow-hidden rounded border border-brand/60 bg-brand/10 px-5 py-3 text-15 font-medium text-brand transition-all hover:bg-brand/20 hover:shadow-[...]
               >
                 {submitting ? (
                   <span className="flex items-center justify-center gap-2">
@@ -406,7 +392,7 @@ export default function HomePage() {
               icon="◇"
               iconColor="#FFB547"
               title="N×N 关系矩阵"
-              desc="两级缓存 + 批量 LLM + 词汇过滤 + 异步并发, 60 claims 仅 ~120 次调用"
+              desc="两级缓存 + 批量 LLM + 词汇过滤 + 异步并发, 60 claims 仅 ~120 次调���"
             />
             <FeatureCard
               icon="✦"
