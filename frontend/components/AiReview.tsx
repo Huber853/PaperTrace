@@ -15,7 +15,9 @@ import { getReview } from "@/lib/api";
 
 interface Props {
   taskId: string;
-  /** 父组件可以在综述回来后提取 "分歧归因" 等片段, 这里只负责展示 */
+  /** 受控值: 由父组件持有, 用于在 sidebar 切换板块后保留生成结果 */
+  value?: ReviewResponse | null;
+  /** 父组件在综述回来后会被通知, 用来更新受控值或做其它派生 */
   onLoaded?: (resp: ReviewResponse) => void;
   /** 是否自动触发生成 (默认需要用户点击) */
   autoGenerate?: boolean;
@@ -25,11 +27,15 @@ interface Props {
 
 export default function AiReview({
   taskId,
+  value,
   onLoaded,
   autoGenerate = false,
   embedded = false,
 }: Props) {
-  const [data, setData] = useState<ReviewResponse | null>(null);
+  // 内部 state 仅作为 uncontrolled 模式 fallback;
+  // 一旦父级传了 value, data 永远以 value 为准
+  const [internal, setInternal] = useState<ReviewResponse | null>(null);
+  const data = value !== undefined ? value : internal;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,7 +44,7 @@ export default function AiReview({
     setError(null);
     try {
       const resp = await getReview(taskId);
-      setData(resp);
+      setInternal(resp);
       onLoaded?.(resp);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "生成失败");

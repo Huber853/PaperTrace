@@ -648,8 +648,13 @@ async def chat_completion(req: ChatRequest):
     )
 
 
-# ===== 接口 5：GET /api/export/{task_id} =====
-def _build_markdown_report(task_id: str, result: dict, review_text: str | None) -> str:
+# ===== 接口 5：POST /api/export/{task_id} =====
+def _build_markdown_report(
+    task_id: str,
+    result: dict,
+    review_text: str | None,
+    recommendations: dict | None = None,
+) -> str:
     query = result.get("query", "")
     papers = result.get("papers", []) or []
     claims = result.get("claims", []) or []
@@ -767,6 +772,51 @@ def _build_markdown_report(task_id: str, result: dict, review_text: str | None) 
         lines.append("_该任务尚未生成综述（请在结果页点击“一键生成综述”后再导出）。_")
     lines.append("")
 
+    # ===== 五、研究方向建议 (前端 RecommendationPanel 调 /api/chat 生成,
+    #       通过 POST /api/export 的请求体一并送进来) =====
+    lines.append("## 五、研究方向建议")
+    lines.append("")
+    if not recommendations or (
+        not (recommendations.get("questions") or [])
+        and not (recommendations.get("methods") or [])
+    ):
+        lines.append(
+            "_该任务尚未生成研究方向建议（请在结果页点击"
+            "“生成研究方向建议”后再导出）。_"
+        )
+    else:
+        priority_label = {"high": "高优先级", "medium": "中优先级", "low": "低优先级"}
+
+        def _render_reco_block(items: list[dict], heading: str) -> None:
+            lines.append(f"### {heading}")
+            lines.append("")
+            if not items:
+                lines.append("_（暂无）_")
+                lines.append("")
+                return
+            for idx, item in enumerate(items, 1):
+                title = (item.get("title") or "").strip()
+                desc = (item.get("desc") or "").strip()
+                sources = item.get("sources") or []
+                priority = priority_label.get(
+                    item.get("priority", ""), item.get("priority", "")
+                )
+                lines.append(f"**{idx}. {title}**  _（{priority}）_")
+                if desc:
+                    lines.append("")
+                    lines.append(desc)
+                if sources:
+                    lines.append("")
+                    lines.append("溯源：" + " · ".join(str(s) for s in sources))
+                lines.append("")
+
+        _render_reco_block(
+            recommendations.get("questions") or [], "研究问题"
+        )
+        _render_reco_block(
+            recommendations.get("methods") or [], "方法路线"
+        )
+
     lines.append("---")
     lines.append("*本报告由 PaperTrace 自动生成。*")
     return "\n".join(lines)
@@ -827,18 +877,37 @@ def _build_bibtex(papers: list[dict]) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
-@app.get("/api/export/{task_id}")
-async def export_report(task_id: str, format: str = "md"):
-    """导出分析报告。支持 format=md | bib。"""
+class ExportRequest(BaseModel):
+    """POST /api/export 的可选请求体。
+    所有字段都可省略,字段缺失等同于 None。
+    """
+    # 前端 RecommendationPanel 调 /api/chat 生成后,通过 export 时一并送进来,
+    # 后端会把它作为 markdown 报告的"五、研究方向建议"段写入。
+    recommendations: dict | None = None
+
+
+@app.post("/api/export/{task_id}")
+async def export_report(
+    task_id: str,
+    format: str = "md",
+    body: ExportRequest | None = None,
+):
+    """导出分析报告。支持 format=md | bib。
+
+    注意:历史版本是 GET, 现在改成 POST 是因为需要接受请求体里的
+    `recommendations`。前端如果没有研究方向建议数据,请发空 body `{}`,
+    服务端仍会照常出报告 (md 里的研究方向建议段提示"尚未生成")。
+    """
     if format not in ("md", "bib"):
-        raise HTTPException(status_code=400, detail=f"暂不支持的导出格式：{format}")
+        raise HTTPException(status_code=400, detail=f"暂不支持的导出格式:{format}")
     task = TASKS.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     if task["status"] != "done":
-        raise HTTPException(status_code=409, detail=f"任务未完成，当前状态：{task['status']}")
+        raise HTTPException(status_code=409, detail=f"任务未完成,当前状态:{task['status']}")
 
     result = task["result"]
+    recommendations = body.recommendations if body else None
 
     query = (result.get("query") or "report").strip().replace(" ", "_")
     safe_query = "".join(ch for ch in query if ch.isalnum() or ch in "_-") or "report"
@@ -847,16 +916,21 @@ async def export_report(task_id: str, format: str = "md"):
     date_str = datetime.now().strftime("%Y%m%d")
 
     if format == "md":
-        body = _build_markdown_report(task_id, result, task.get("review")).encode("utf-8")
+        body_bytes = _build_markdown_report(
+            task_id,
+            result,
+            task.get("review"),
+            recommendations,
+        ).encode("utf-8")
         media = "text/markdown; charset=utf-8"
         filename = f"PaperTrace_报告_{safe_query}_{date_str}.md"
     else:  # bib
-        body = _build_bibtex(result.get("papers") or []).encode("utf-8")
+        body_bytes = _build_bibtex(result.get("papers") or []).encode("utf-8")
         media = "application/x-bibtex; charset=utf-8"
         filename = f"PaperTrace_文献_{safe_query}_{date_str}.bib"
 
     return Response(
-        content=body,
+        content=body_bytes,
         media_type=media,
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",

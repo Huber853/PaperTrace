@@ -25,6 +25,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import {
   AnalysisResult,
+  ReviewResponse,
   TaskStatusResponse,
   exportReport,
   getResult,
@@ -111,10 +112,15 @@ export default function ResultPage({ params }: PageProps) {
   };
 
   // —— 导出 ——
-  const handleExport = async (format: ExportFormat) => {
+  // extras 由 ResultLayout 注入 (主要是 recommendations, 在子组件 state 里),
+  // 这样 markdown 导出时能把"研究方向建议"也写进去
+  const handleExport = async (
+    format: ExportFormat,
+    extras?: Parameters<typeof exportReport>[2],
+  ) => {
     setExporting(format);
     try {
-      const { blob, filename } = await exportReport(taskId, format);
+      const { blob, filename } = await exportReport(taskId, format, extras);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -185,10 +191,43 @@ function ResultLayout({
   result: AnalysisResult;
   onRefresh: () => void;
   refreshing: boolean;
-  onExport: (fmt: ExportFormat) => void;
+  onExport: (
+    fmt: ExportFormat,
+    extras?: Parameters<typeof exportReport>[2],
+  ) => void;
   exporting: ExportFormat | null;
 }) {
   const [active, setActive] = useState<SectionId>("overview");
+
+  // ============================================================
+  // 把 AI 综述与研究方向建议的状态提升到这里 (Bug 1 修复)
+  // 子组件 AiReview / RecommendationPanel 卸载时数据不丢失,
+  // 切回 ai 板块仍能完整看到之前生成的内容.
+  // ============================================================
+  const [review, setReview] = useState<ReviewResponse | null>(null);
+  const [recommendations, setRecommendations] = useState<{
+    questions: Array<{
+      title: string;
+      desc: string;
+      sources: string[];
+      priority: "high" | "medium" | "low";
+    }>;
+    methods: Array<{
+      title: string;
+      desc: string;
+      sources: string[];
+      priority: "high" | "medium" | "low";
+    }>;
+  } | null>(null);
+  const [recommendMeta, setRecommendMeta] = useState<{
+    ms: number;
+    model: string;
+  } | null>(null);
+
+  // 包一层导出, 自动把当前 recommendations 注入请求体 (Bug 2 修复)
+  const handleExport = (fmt: ExportFormat) => {
+    onExport(fmt, { recommendations });
+  };
 
   // 计算每个 section 的徽章数 (只算高置信度矛盾)
   const counts = useMemo(() => {
@@ -224,7 +263,7 @@ function ResultLayout({
         dataFetchedAt={result.data_fetched_at}
         onRefresh={onRefresh}
         refreshing={refreshing}
-        onExport={onExport}
+        onExport={handleExport}
         exporting={exporting}
       />
 
@@ -253,15 +292,28 @@ function ResultLayout({
               />
             )}
 
-            {active === "ai" && (
+            {/* AI 板块: 始终保持挂载, 但仅在 active==="ai" 时显示.
+             *  这样切走再切回, AiReview / RecommendationPanel 的内部 loading
+             *  / error / tab 状态都不会被重置. 数据本身已经提升到
+             *  ResultLayout 的 review / recommendations state, 即便组件被
+             *  卸载也不会丢. */}
+            <div className={active === "ai" ? "" : "hidden"} aria-hidden={active !== "ai"}>
               <AiInsightsSection
                 taskId={taskId}
                 query={result.query}
                 claims={result.claims}
                 matrix={result.matrix}
                 papers={result.papers}
+                review={review}
+                onReviewLoaded={setReview}
+                recommendations={recommendations}
+                recommendMeta={recommendMeta}
+                onRecommendLoaded={(data, meta) => {
+                  setRecommendations(data);
+                  setRecommendMeta(meta);
+                }}
               />
-            )}
+            </div>
 
             {active === "papers" && (
               <PapersList
@@ -610,12 +662,32 @@ function AiInsightsSection({
   claims,
   matrix,
   papers,
+  review,
+  onReviewLoaded,
+  recommendations,
+  recommendMeta,
+  onRecommendLoaded,
 }: {
   taskId: string;
   query: string;
   claims: Claim[];
   matrix: Relation[][];
   papers: Paper[];
+  /** 受控: 综述结果 (由父级 ResultLayout 持有) */
+  review: ReviewResponse | null;
+  onReviewLoaded: (resp: ReviewResponse) => void;
+  /** 受控: 研究方向建议 + 元数据 */
+  recommendations:
+    | {
+        questions: Array<{ title: string; desc: string; sources: string[]; priority: "high" | "medium" | "low" }>;
+        methods: Array<{ title: string; desc: string; sources: string[]; priority: "high" | "medium" | "low" }>;
+      }
+    | null;
+  recommendMeta: { ms: number; model: string } | null;
+  onRecommendLoaded: (
+    data: NonNullable<AiInsightsRecommendations>,
+    meta: { ms: number; model: string },
+  ) => void;
 }) {
   return (
     <section className="overflow-hidden rounded-lg border border-border bg-bg-surface">
@@ -629,7 +701,12 @@ function AiInsightsSection({
 
       {/* 上半: 综述段落 */}
       <div className="border-b border-border px-6 py-6">
-        <AiReview taskId={taskId} embedded />
+        <AiReview
+          taskId={taskId}
+          embedded
+          value={review}
+          onLoaded={onReviewLoaded}
+        />
       </div>
 
       {/* 下半: 研究方向建议 (淡紫径向光晕作背景层次) */}
@@ -646,11 +723,20 @@ function AiInsightsSection({
           matrix={matrix}
           papers={papers}
           embedded
+          value={recommendations}
+          meta={recommendMeta}
+          onLoaded={onRecommendLoaded}
         />
       </div>
     </section>
   );
 }
+
+// 给 AiInsightsSection 抽个共享类型, 便于在父级 / 子级间通用
+type AiInsightsRecommendations = {
+  questions: Array<{ title: string; desc: string; sources: string[]; priority: "high" | "medium" | "low" }>;
+  methods: Array<{ title: string; desc: string; sources: string[]; priority: "high" | "medium" | "low" }>;
+} | null;
 
 /* ====================================================== */
 /* 模块 06 · 论文列表                                         */

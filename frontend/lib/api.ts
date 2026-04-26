@@ -252,14 +252,41 @@ export async function chatCompletion(
 /** 支持的导出格式 */
 export type ExportFormat = "md" | "bib";
 
+/** 导出时可选附加给后端的内容
+ *  (用于把前端独有的研究方向建议一并写入 markdown 报告) */
+export interface ExportExtras {
+  /** 研究方向建议 (RecommendationPanel 通过 /api/chat 生成, 后端原本看不到) */
+  recommendations?: {
+    questions: Array<{
+      title: string;
+      desc: string;
+      sources: string[];
+      priority: "high" | "medium" | "low";
+    }>;
+    methods: Array<{
+      title: string;
+      desc: string;
+      sources: string[];
+      priority: "high" | "medium" | "low";
+    }>;
+  } | null;
+}
+
 export async function exportReport(
   taskId: string,
-  format: ExportFormat = "md"
+  format: ExportFormat = "md",
+  extras: ExportExtras = {}
 ): Promise<{ blob: Blob; filename: string }> {
-  const resp = await http.get(`/api/export/${taskId}`, {
-    params: { format },
-    responseType: "blob",
-  });
+  // 改用 POST: 通过请求体把 recommendations 传给后端,
+  // 后端拿到后会把"研究方向建议"段写进 markdown 报告.
+  const resp = await http.post(
+    `/api/export/${taskId}`,
+    { recommendations: extras.recommendations ?? null },
+    {
+      params: { format },
+      responseType: "blob",
+    }
+  );
   const cd: string = resp.headers["content-disposition"] || "";
   const fallbackExt = format === "bib" ? "bib" : "md";
   let filename = `PaperTrace_${taskId}.${fallbackExt}`;

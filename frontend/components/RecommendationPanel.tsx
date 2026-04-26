@@ -48,6 +48,12 @@ interface Props {
   papers: Paper[];
   /** 嵌入模式:不渲染外层 section / 边框 / 渐变背景, 由父级提供容器 */
   embedded?: boolean;
+  /** 受控值: 由父级持有, 切换 sidebar 板块再回来仍可见 */
+  value?: RecommendResponse | null;
+  /** 受控元数据 (耗时 / 模型) */
+  meta?: { ms: number; model: string } | null;
+  /** 父级在生成完成后被通知, 用于更新受控值 */
+  onLoaded?: (data: RecommendResponse, meta: { ms: number; model: string }) => void;
 }
 
 /* ============== 组件 ============== */
@@ -56,6 +62,9 @@ export default function RecommendationPanel({
   claims,
   matrix,
   embedded = false,
+  value,
+  meta: metaProp,
+  onLoaded,
 }: Props) {
   // 从矩阵抽取 contradict 对 → 作为 prompt 输入
   const conflicts: ConflictInput[] = useMemo(() => {
@@ -92,8 +101,12 @@ export default function RecommendationPanel({
     [claims]
   );
 
-  const [data, setData] = useState<RecommendResponse | null>(null);
-  const [meta, setMeta] = useState<{ ms: number; model: string } | null>(null);
+  // 内部 state 仅作为 uncontrolled fallback;
+  // 一旦父级传 value/meta, 优先以受控值渲染
+  const [internalData, setInternalData] = useState<RecommendResponse | null>(null);
+  const [internalMeta, setInternalMeta] = useState<{ ms: number; model: string } | null>(null);
+  const data = value !== undefined ? value : internalData;
+  const meta = metaProp !== undefined ? metaProp : internalMeta;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"questions" | "methods">("questions");
@@ -163,8 +176,10 @@ export default function RecommendationPanel({
       parsed.questions.sort((a, b) => order[a.priority] - order[b.priority]);
       parsed.methods.sort((a, b) => order[a.priority] - order[b.priority]);
 
-      setData(parsed);
-      setMeta({ ms: resp.elapsed_ms, model: resp.model });
+      const newMeta = { ms: resp.elapsed_ms, model: resp.model };
+      setInternalData(parsed);
+      setInternalMeta(newMeta);
+      onLoaded?.(parsed, newMeta);
     } catch (e: unknown) {
       if (e instanceof Error) {
         if (e.name === "CanceledError" || e.message.includes("abort")) {
