@@ -202,15 +202,19 @@ class AgentRepository:
             last = db.scalar(
                 select(func.max(AgentStep.sequence)).where(AgentStep.run_id == run_id)
             ) or 0
+            step_fields = dict(fields)
+            if step_fields.get("status") == "completed" and "finished_at" not in step_fields:
+                step_fields["finished_at"] = utc_now()
             step = AgentStep(
                 run_id=run_id,
                 sequence=last + 1,
                 phase=phase,
                 action_type=action_type,
                 action_summary=action_summary,
-                **fields,
+                **step_fields,
             )
             run.step_count = last + 1
+            run.token_usage += int(step.input_tokens or 0) + int(step.output_tokens or 0)
             db.add(step)
             db.flush()
             return step

@@ -59,3 +59,20 @@ def test_recover_running_requeues_only_incomplete_runs(session_factory):
     assert repo.get_run(running.id).status == RunStatus.QUEUED
     assert repo.get_run(completed.id).status == RunStatus.COMPLETED
 
+
+def test_completed_step_updates_run_token_totals(session_factory):
+    repo = AgentRepository(session_factory)
+    run = repo.create_run(query="token accounting")
+
+    step = repo.append_step(
+        run.id,
+        AgentPhase.PLAN,
+        "tool",
+        "规划",
+        status="completed",
+        input_tokens=7,
+        output_tokens=5,
+    )
+
+    assert step.finished_at is not None
+    assert repo.get_run(run.id).token_usage == 12
