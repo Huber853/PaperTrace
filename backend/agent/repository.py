@@ -185,6 +185,10 @@ class AgentRepository:
                 )
             )
 
+    def get_artifact(self, artifact_id: str) -> AgentArtifact | None:
+        with self.session() as db:
+            return db.get(AgentArtifact, artifact_id)
+
     def append_step(
         self,
         run_id: str,
@@ -217,6 +221,35 @@ class AgentRepository:
             db.add(call)
             db.flush()
             return call
+
+    def list_tool_calls(self, run_id: str) -> list[AgentToolCall]:
+        with self.session() as db:
+            return list(
+                db.scalars(
+                    select(AgentToolCall)
+                    .where(AgentToolCall.run_id == run_id)
+                    .order_by(AgentToolCall.created_at, AgentToolCall.id)
+                )
+            )
+
+    def find_successful_tool_call(
+        self,
+        run_id: str,
+        tool_name: str,
+        arguments_hash: str,
+    ) -> AgentToolCall | None:
+        with self.session() as db:
+            return db.scalar(
+                select(AgentToolCall)
+                .where(
+                    AgentToolCall.run_id == run_id,
+                    AgentToolCall.tool_name == tool_name,
+                    AgentToolCall.arguments_hash == arguments_hash,
+                    AgentToolCall.status.in_(["success", "partial"]),
+                )
+                .order_by(AgentToolCall.created_at.desc())
+                .limit(1)
+            )
 
     def list_steps(self, run_id: str) -> list[AgentStep]:
         with self.session() as db:
@@ -267,4 +300,3 @@ class AgentRepository:
         if run is None:
             raise KeyError(f"agent run not found: {run_id}")
         return run
-
