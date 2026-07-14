@@ -24,24 +24,31 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import {
+  AgentEvent,
+  AgentRun,
+  AgentTraceResponse,
   AnalysisResult,
   ReviewResponse,
-  TaskStatusResponse,
+  cancelAgentRun,
   exportReport,
+  getAgentEvents,
+  getAgentRun,
+  getAgentTrace,
   getResult,
-  getTaskStatus,
+  retryAgentRun,
   startAnalysis,
+  submitAgentInput,
   type Claim,
   type Paper,
   type Relation,
   type ExportFormat,
 } from "@/lib/api";
 import { useRouter } from "next/navigation";
-import LoadingSteps from "@/components/LoadingSteps";
 import OpinionBar from "@/components/OpinionBar";
 import ContradictionCards from "@/components/ContradictionCards";
 import AiReview from "@/components/AiReview";
 import RecommendationPanel from "@/components/RecommendationPanel";
+import AgentTrace from "@/components/AgentTrace";
 
 // ECharts 依赖 window, 禁用 SSR
 const ContradictionMatrix = dynamic(
@@ -61,29 +68,41 @@ export default function ResultPage({ params }: PageProps) {
   const { taskId } = params;
   const router = useRouter();
 
-  const [status, setStatus] = useState<TaskStatusResponse | null>(null);
+  const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
+  const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
+  const [agentTrace, setAgentTrace] = useState<AgentTraceResponse | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const eventSequenceRef = useRef(0);
 
   // —— 轮询 ——
   useEffect(() => {
     let mounted = true;
     const tick = async () => {
       try {
-        const s = await getTaskStatus(taskId);
+        const run = await getAgentRun(taskId);
         if (!mounted) return;
-        setStatus(s);
-        if (s.status === "done") {
+        setAgentRun(run);
+
+        const [newEvents, trace] = await Promise.all([
+          getAgentEvents(taskId, eventSequenceRef.current),
+          getAgentTrace(taskId),
+        ]);
+        if (!mounted) return;
+        if (newEvents.length > 0) {
+          eventSequenceRef.current = newEvents[newEvents.length - 1].sequence;
+          setAgentEvents((previous) => [...previous, ...newEvents]);
+        }
+        setAgentTrace(trace);
+
+        if (run.status === "completed") {
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
           const r = await getResult(taskId);
           if (mounted) setResult(r);
-        } else if (s.status === "failed") {
-          if (pollRef.current) clearInterval(pollRef.current);
-          pollRef.current = null;
         }
       } catch (e: unknown) {
         if (mounted)
@@ -97,6 +116,22 @@ export default function ResultPage({ params }: PageProps) {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [taskId]);
+
+  const handleAgentInput = async (content: string) => {
+    const run = await submitAgentInput(taskId, content);
+    setAgentRun(run);
+  };
+
+  const handleAgentCancel = async () => {
+    const run = await cancelAgentRun(taskId);
+    setAgentRun(run);
+  };
+
+  const handleAgentRetry = async () => {
+    const run = await retryAgentRun(taskId);
+    setFetchError(null);
+    setAgentRun(run);
+  };
 
   // —— 刷新数据: 新任务 + 跳转 ——
   const handleRefresh = async () => {
@@ -140,19 +175,20 @@ export default function ResultPage({ params }: PageProps) {
   if (fetchError) {
     return <ErrorScreen message={fetchError} />;
   }
-  if (!status) {
+  if (!agentRun) {
     return <SkeletonScreen taskId={taskId} />;
   }
-  if (status.status === "failed") {
+  if (!result) {
     return (
-      <ErrorScreen
-        message={status.error || "任务失败, 请返回首页重试"}
-        backHref="/"
+      <PendingScreen
+        run={agentRun}
+        events={agentEvents}
+        trace={agentTrace}
+        onSubmitInput={handleAgentInput}
+        onCancel={handleAgentCancel}
+        onRetry={handleAgentRetry}
       />
     );
-  }
-  if (!result) {
-    return <PendingScreen status={status} />;
   }
 
   return (
@@ -163,6 +199,9 @@ export default function ResultPage({ params }: PageProps) {
       refreshing={refreshing}
       onExport={handleExport}
       exporting={exporting}
+      agentRun={agentRun}
+      agentEvents={agentEvents}
+      agentTrace={agentTrace}
     />
   );
 }
@@ -172,6 +211,7 @@ export default function ResultPage({ params }: PageProps) {
 /* ====================================================== */
 type SectionId =
   | "overview"
+  | "trace"
   | "contradictions"
   | "network"
   | "ai"
@@ -186,6 +226,9 @@ function ResultLayout({
   refreshing,
   onExport,
   exporting,
+  agentRun,
+  agentEvents,
+  agentTrace,
 }: {
   taskId: string;
   result: AnalysisResult;
@@ -196,6 +239,9 @@ function ResultLayout({
     extras?: Parameters<typeof exportReport>[2],
   ) => void;
   exporting: ExportFormat | null;
+  agentRun: AgentRun;
+  agentEvents: AgentEvent[];
+  agentTrace: AgentTraceResponse | null;
 }) {
   const [active, setActive] = useState<SectionId>("overview");
 
@@ -204,7 +250,19 @@ function ResultLayout({
   // 子组件 AiReview / RecommendationPanel 卸载时数据不丢失,
   // 切回 ai 板块仍能完整看到之前生成的内容.
   // ============================================================
-  const [review, setReview] = useState<ReviewResponse | null>(null);
+  const [review, setReview] = useState<ReviewResponse | null>(() =>
+    result.review
+      ? {
+          task_id: taskId,
+          review: result.review,
+          cached: true,
+          elapsed_ms: result.review_meta?.elapsed_ms ?? 0,
+          input_tokens: result.review_meta?.input_tokens ?? 0,
+          output_tokens: result.review_meta?.output_tokens ?? 0,
+          model: result.review_meta?.model ?? "",
+        }
+      : null
+  );
   const [recommendations, setRecommendations] = useState<{
     questions: Array<{
       title: string;
@@ -218,11 +276,18 @@ function ResultLayout({
       sources: string[];
       priority: "high" | "medium" | "low";
     }>;
-  } | null>(null);
+  } | null>(result.recommendations ?? null);
   const [recommendMeta, setRecommendMeta] = useState<{
     ms: number;
     model: string;
-  } | null>(null);
+  } | null>(
+    result.recommendations?.meta
+      ? {
+          ms: result.recommendations.meta.elapsed_ms ?? 0,
+          model: result.recommendations.meta.model ?? "",
+        }
+      : null
+  );
 
   // 包一层导出, 自动把当前 recommendations 注入请求体 (Bug 2 修复)
   const handleExport = (fmt: ExportFormat) => {
@@ -275,6 +340,10 @@ function ResultLayout({
           {/* 右侧内容区 */}
           <main className="min-w-0 flex-1">
             {active === "overview" && <OverviewSection result={result} />}
+
+            {active === "trace" && (
+              <AgentTrace run={agentRun} events={agentEvents} trace={agentTrace} />
+            )}
 
             {active === "contradictions" && (
               <ContradictionCards
@@ -374,6 +443,7 @@ const SECTIONS: ReadonlyArray<{
   badgeKey?: "contradictions" | "papers" | "claims";
 }> = [
   { id: "overview",       label: "概览",        icon: "◇", color: "#B4AEFF" },
+  { id: "trace",          label: "执行轨迹",    icon: "↻", color: "#7DD3FC" },
   { id: "contradictions", label: "核心矛盾",    icon: "✕", color: "#FFB547", badgeKey: "contradictions" },
   { id: "network",        label: "矛盾网络",    icon: "◉", color: "#FFB547" },
   { id: "ai",             label: "AI 智能解读", icon: "✦", color: "#4ADE80" },
@@ -1014,14 +1084,47 @@ function AllClaims({
 /* ====================================================== */
 /* Pending / Skeleton / Error                               */
 /* ====================================================== */
-function PendingScreen({ status }: { status: TaskStatusResponse }) {
+function PendingScreen({
+  run,
+  events,
+  trace,
+  onSubmitInput,
+  onCancel,
+  onRetry,
+}: {
+  run: AgentRun;
+  events: AgentEvent[];
+  trace: AgentTraceResponse | null;
+  onSubmitInput: (content: string) => Promise<void>;
+  onCancel: () => Promise<void>;
+  onRetry: () => Promise<void>;
+}) {
   return (
-    <div className="mx-auto flex min-h-screen max-w-2xl flex-col items-start justify-center px-6">
-      <div className="eyebrow">task {status.task_id.slice(0, 8)}</div>
-      <h1 className="mt-2 text-24 font-medium">正在分析 ...</h1>
-      <p className="mt-2 text-13 text-text-secondary">{status.progress}</p>
-      <div className="mt-8 w-full">
-        <LoadingSteps progress={status.progress} />
+    <div className="min-h-screen bg-bg-base px-4 py-10 text-text-primary md:px-6">
+      <div className="mx-auto w-full max-w-5xl">
+        <Link href="/" className="text-12 text-text-muted hover:text-text-primary">
+          ← 返回首页
+        </Link>
+        <div className="mb-6 mt-8">
+          <div className="eyebrow">task {run.task_id.slice(0, 8)}</div>
+          <h1 className="mt-2 text-24 font-medium">
+            {run.status === "waiting_input"
+              ? "需要补充信息"
+              : run.status === "failed"
+                ? "分析暂停"
+                : run.status === "cancelled"
+                  ? "任务已取消"
+                  : "正在分析"}
+          </h1>
+        </div>
+        <AgentTrace
+          run={run}
+          events={events}
+          trace={trace}
+          onSubmitInput={onSubmitInput}
+          onCancel={onCancel}
+          onRetry={onRetry}
+        />
       </div>
     </div>
   );
