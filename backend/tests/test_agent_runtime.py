@@ -4,10 +4,12 @@ import asyncio
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel
 
 from agent.hooks import AgentHook, HookBus, HookContext, HookDecision, HookResult
 from agent.policies import PolicyViolation, RunPolicy
 from agent.schemas import AgentAction, AgentPhase, CompletePhase, ToolAction
+from agent.tools import AgentTool, ToolContext, ToolRegistry
 
 
 def test_agent_action_is_discriminated_and_validated():
@@ -80,3 +82,48 @@ def test_hook_bus_runs_in_order_and_stops_on_pause():
     with pytest.raises(ValidationError):
         context.run_id = "mutated"
 
+
+def test_tool_registry_validates_phase_hashes_and_retries():
+    class EchoInput(BaseModel):
+        text: str
+
+    class EchoOutput(BaseModel):
+        echoed: str
+
+    class FlakyEchoTool(AgentTool):
+        name = "echo"
+        description = "Echo a value"
+        input_model = EchoInput
+        output_model = EchoOutput
+        allowed_phases = {AgentPhase.PLAN}
+
+        def __init__(self):
+            self.attempts = 0
+
+        async def execute(self, context, arguments):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise TimeoutError("temporary")
+            return {"echoed": arguments.text}
+
+    tool = FlakyEchoTool()
+    registry = ToolRegistry([tool])
+    context = ToolContext(run_id="run-1", phase=AgentPhase.PLAN)
+
+    execution = asyncio.run(
+        registry.invoke("echo", {"text": "hello"}, context, retry_count=1)
+    )
+    same_hash = registry.arguments_hash("echo", {"text": "hello"})
+
+    assert execution.result.status == "success"
+    assert execution.result.data == {"echoed": "hello"}
+    assert execution.arguments_hash == same_hash
+    assert execution.attempts == 2
+
+    wrong_phase = ToolContext(run_id="run-1", phase=AgentPhase.FINALIZE)
+    with pytest.raises(PolicyViolation, match="not allowed"):
+        asyncio.run(registry.invoke("echo", {"text": "hello"}, wrong_phase))
+
+    invalid = asyncio.run(registry.invoke("echo", {}, context))
+    assert invalid.result.status == "failed"
+    assert invalid.result.error_code == "validation_error"
