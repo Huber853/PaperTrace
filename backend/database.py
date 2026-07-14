@@ -74,17 +74,18 @@ DB_PATH = BASE_DIR / "papertrace.db"             # 本地默认：backend/papert
 #     （对 PaperTrace 这种"每次查询都现拉论文"的工具来说，丢库其实可以接受）
 import os as _os
 DATABASE_URL = _os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
 
 # ===== 引擎和会话工厂 =====
 # create_engine 创建一个"数据库连接管理器"，整个 app 共用一个
 # echo=False 关闭 SQL 日志；调试时可以临时改 True 看 SQLAlchemy 实际发的 SQL
 # connect_args 是 SQLite 专属参数：允许多线程访问（FastAPI 需要）
-engine = create_engine(
-    DATABASE_URL,
-    echo=False,
-    connect_args={"check_same_thread": False},
-)
+_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, echo=False, connect_args=_connect_args)
 
 # sessionmaker 是"会话工厂"，调它一次产出一个 Session 对象
 # autoflush=False：手动控制何时写盘，避免意外触发
@@ -273,6 +274,9 @@ class Contradiction(Base):
 # ===== 工具函数 =====
 def init_db() -> None:
     """创建所有表（如果还不存在）。app 启动时调一次即可。"""
+    # Agent 模型与现有模型共享 Base；延迟导入避免 database <-> agent.models 循环导入。
+    import agent.models  # noqa: F401
+
     # Base.metadata 收集了所有继承 Base 的模型的表结构
     # create_all 只会创建不存在的表，已有的表不会被改动
     Base.metadata.create_all(bind=engine)
