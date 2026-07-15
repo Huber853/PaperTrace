@@ -43,7 +43,7 @@ import {
   type Relation,
   type ExportFormat,
 } from "@/lib/api";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import OpinionBar from "@/components/OpinionBar";
 import ContradictionCards from "@/components/ContradictionCards";
 import AiReview from "@/components/AiReview";
@@ -60,12 +60,8 @@ const DebateNetwork = dynamic(
   { ssr: false }
 );
 
-interface PageProps {
-  params: { taskId: string };
-}
-
-export default function ResultPage({ params }: PageProps) {
-  const { taskId } = params;
+export default function ResultPage() {
+  const { taskId } = useParams<{ taskId: string }>();
   const router = useRouter();
 
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);

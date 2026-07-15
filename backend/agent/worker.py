@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import Callable
+
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from .harness import AgentHarness
 from .model_provider import DeepSeekModelProvider
@@ -55,11 +58,22 @@ class AgentWorker:
 
 
 async def main() -> None:
+    repository = AgentRepository()
+    wait_seconds = float(os.getenv("AGENT_SCHEMA_WAIT_SECONDS", "120"))
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            repository.recover_running()
+            break
+        except (OperationalError, ProgrammingError):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("database schema was not ready before worker timeout")
+            await asyncio.sleep(2)
+
     poll_interval = float(os.getenv("AGENT_WORKER_POLL_SECONDS", "1"))
-    worker = AgentWorker(AgentRepository(), poll_interval=poll_interval)
+    worker = AgentWorker(repository, poll_interval=poll_interval)
     await worker.serve()
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-

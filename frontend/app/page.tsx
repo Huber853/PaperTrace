@@ -42,7 +42,8 @@ export default function HomePage() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (window.sessionStorage.getItem(SPLASH_SESSION_KEY) === "1") {
-      setShowSplash(false);
+      const frame = window.requestAnimationFrame(() => setShowSplash(false));
+      return () => window.cancelAnimationFrame(frame);
     }
   }, []);
   const dismissSplash = () => {

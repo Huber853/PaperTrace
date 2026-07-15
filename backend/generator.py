@@ -65,7 +65,7 @@ async def deepseek_chat(
 ) -> ChatResult:
     """
     通用 DeepSeek chat completions 封装。
-    其他模块 (generate_review、/api/chat 路由等) 都应该复用这个函数,
+    综述生成和 Agent 工具适配器都应该复用这个函数,
     避免到处手写 httpx + headers + api_key。
     """
     payload: dict = {
