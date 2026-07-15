@@ -1,0 +1,8 @@
+[
+  {
+    "name": "basic-relation-labels",
+    "expected": ["support", "contradict", "unrelated"],
+    "predicted": ["support", "contradict", "unrelated"],
+    "threshold": 1.0
+  }
+]

@@ -55,7 +55,8 @@ export default function AiReview({
 
   useEffect(() => {
     if (autoGenerate && !data && !loading) {
-      generate();
+      const timer = window.setTimeout(() => void generate(), 0);
+      return () => window.clearTimeout(timer);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoGenerate, taskId]);

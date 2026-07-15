@@ -22,6 +22,101 @@ import axios, { AxiosError, AxiosInstance } from "axios";
 /** 后端任务的四种状态 */
 export type TaskStatus = "pending" | "running" | "done" | "failed";
 
+export type AgentStatus =
+  | "queued"
+  | "running"
+  | "waiting_input"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type AgentPhase =
+  | "plan"
+  | "discover"
+  | "extract"
+  | "analyze"
+  | "synthesize"
+  | "verify"
+  | "finalize";
+
+export interface AgentRun {
+  run_id: string;
+  task_id: string;
+  status: AgentStatus;
+  current_phase: AgentPhase;
+  progress: string;
+  pending_question: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  step_count: number;
+  token_usage: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentEvent {
+  sequence: number;
+  event_type: string;
+  phase: AgentPhase | null;
+  message: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AgentTraceStep {
+  id: string;
+  sequence: number;
+  phase: AgentPhase;
+  action_type: string;
+  action_summary: string;
+  status: string;
+  model_name: string;
+  input_tokens: number;
+  output_tokens: number;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface AgentToolCall {
+  id: string;
+  step_id: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  status: string;
+  result_summary: string;
+  artifact_ids: string[];
+  duration_ms: number;
+  retry_count: number;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface AgentTraceResponse {
+  run_id: string;
+  steps: AgentTraceStep[];
+  tool_calls: AgentToolCall[];
+}
+
+export interface Recommendation {
+  title: string;
+  desc: string;
+  sources: string[];
+  priority: "high" | "medium" | "low";
+}
+
+export interface Recommendations {
+  questions: Recommendation[];
+  methods: Recommendation[];
+  meta?: {
+    elapsed_ms?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    model?: string;
+  };
+}
+
 /** 关系矩阵中的一个格子 */
 export interface Relation {
   relation: "support" | "contradict" | "unrelated";
@@ -79,6 +174,15 @@ export interface AnalysisResult {
   timeline: TimelinePoint[];
   /** ISO 8601 时间戳：这批论文最初是何时从 OpenAlex/arXiv 拉到的 */
   data_fetched_at: string;
+  review?: string | null;
+  review_meta?: {
+    elapsed_ms?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    model?: string;
+  } | null;
+  recommendations?: Recommendations | null;
+  verification?: Record<string, unknown> | null;
 }
 
 /** POST /api/analyze 的响应 */
@@ -175,6 +279,54 @@ export async function getResult(taskId: string): Promise<AnalysisResult> {
   return data;
 }
 
+export async function getAgentRun(runId: string): Promise<AgentRun> {
+  const { data } = await http.get<AgentRun>(`/api/agent/runs/${runId}`);
+  return data;
+}
+
+export async function getAgentEvents(
+  runId: string,
+  afterSeq = 0
+): Promise<AgentEvent[]> {
+  const { data } = await http.get<{ events: AgentEvent[] }>(
+    `/api/agent/runs/${runId}/events`,
+    { params: { after_seq: afterSeq } }
+  );
+  return data.events;
+}
+
+export async function getAgentTrace(runId: string): Promise<AgentTraceResponse> {
+  const { data } = await http.get<AgentTraceResponse>(
+    `/api/agent/runs/${runId}/trace`
+  );
+  return data;
+}
+
+export async function submitAgentInput(
+  runId: string,
+  content: string
+): Promise<AgentRun> {
+  const { data } = await http.post<AgentRun>(
+    `/api/agent/runs/${runId}/input`,
+    { content }
+  );
+  return data;
+}
+
+export async function cancelAgentRun(runId: string): Promise<AgentRun> {
+  const { data } = await http.post<AgentRun>(
+    `/api/agent/runs/${runId}/cancel`
+  );
+  return data;
+}
+
+export async function retryAgentRun(runId: string): Promise<AgentRun> {
+  const { data } = await http.post<AgentRun>(
+    `/api/agent/runs/${runId}/retry`
+  );
+  return data;
+}
+
 /**
  * 生成/获取综述段落
  * ------
@@ -189,87 +341,14 @@ export async function getReview(taskId: string): Promise<ReviewResponse> {
   return data;
 }
 
-// ============== /api/chat 通用 DeepSeek 代理 ==============
-
-export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
-
-export interface ChatOptions {
-  /** 默认 0.5, 取值 0-2 */
-  temperature?: number;
-  /** { type: "json_object" } 强制 DeepSeek 返回合法 JSON */
-  response_format?: { type: "json_object" };
-  /** 请求超时 (毫秒), 默认 30_000 */
-  timeoutMs?: number;
-  /** 调用方传入的 AbortSignal, 用来配合页面卸载时中止 */
-  signal?: AbortSignal;
-}
-
-export interface ChatResponseBody {
-  content: string;
-  elapsed_ms: number;
-  input_tokens: number;
-  output_tokens: number;
-  model: string;
-}
-
-/**
- * 通用 DeepSeek 代理调用。
- * 后端 POST /api/chat 透传给 DeepSeek,API key 只留在服务器端。
- */
-export async function chatCompletion(
-  messages: ChatMessage[],
-  options: ChatOptions = {}
-): Promise<ChatResponseBody> {
-  const controller = new AbortController();
-  const timeoutMs = options.timeoutMs ?? 30_000;
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  // 把外部 signal 也桥接进来
-  if (options.signal) {
-    if (options.signal.aborted) controller.abort();
-    else options.signal.addEventListener("abort", () => controller.abort());
-  }
-
-  try {
-    const { data } = await http.post<ChatResponseBody>(
-      "/api/chat",
-      {
-        messages,
-        temperature: options.temperature ?? 0.5,
-        response_format: options.response_format,
-      },
-      { signal: controller.signal, timeout: timeoutMs }
-    );
-    return data;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /** 支持的导出格式 */
 export type ExportFormat = "md" | "bib";
 
 /** 导出时可选附加给后端的内容
  *  (用于把前端独有的研究方向建议一并写入 markdown 报告) */
 export interface ExportExtras {
-  /** 研究方向建议 (RecommendationPanel 通过 /api/chat 生成, 后端原本看不到) */
-  recommendations?: {
-    questions: Array<{
-      title: string;
-      desc: string;
-      sources: string[];
-      priority: "high" | "medium" | "low";
-    }>;
-    methods: Array<{
-      title: string;
-      desc: string;
-      sources: string[];
-      priority: "high" | "medium" | "low";
-    }>;
-  } | null;
+  /** 后端 Agent Harness 持久化的研究方向建议 */
+  recommendations?: Recommendations | null;
 }
 
 export async function exportReport(
